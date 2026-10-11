@@ -1,0 +1,19 @@
+{
+  "name": "claude-code-mods",
+  "description": "Small mods that change how Claude Code looks and sounds.",
+  "owner": {
+    "name": "thangdo19"
+  },
+  "plugins": [
+    {
+      "name": "producer-tag",
+      "source": "./producer-tag",
+      "description": "Plays an anime-voice producer tag (「マスター！確認してください」, 'Master! Please check this.') when Claude finishes or needs your approval."
+    },
+    {
+      "name": "usage-forecast",
+      "source": "./usage-forecast",
+      "description": "A live forecast of your context window, plus your session and weekly usage limits, in the band above the prompt."
+    }
+  ]
+}

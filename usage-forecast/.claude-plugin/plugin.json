@@ -1,0 +1,9 @@
+{
+  "name": "usage-forecast",
+  "version": "0.1.0",
+  "description": "A live forecast of your context window, plus your session and weekly usage limits, in the band above the prompt.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "thangdo19"
+  }
+}

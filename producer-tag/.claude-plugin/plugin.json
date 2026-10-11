@@ -1,0 +1,16 @@
+{
+  "name": "producer-tag",
+  "version": "0.1.0",
+  "description": "Plays an anime-voice producer tag (「マスター！確認してください」, 'Master! Please check this.') when Claude finishes or needs your approval.",
+  "author": {
+    "name": "thangdo19"
+  },
+  "userConfig": {
+    "sound": {
+      "type": "string",
+      "title": "Sound file",
+      "description": "Path to your own .wav, .mp3, .m4a or .aiff file (up to 4 MB). Leave empty for the default tag.",
+      "default": ""
+    }
+  }
+}
