@@ -10,6 +10,7 @@ A live "weather report" above the prompt: how full Claude's memory is, and how m
 
 | Part | Meaning |
 |---|---|
+| `◆ Opus 5.5 high` | The model answering you, and its effort (how hard it thinks). Effort shows after Claude's first reply. |
 | `☀ Clear` | The weather for how full it is (see below). |
 | `8%`  `81.8k / 1M` | Tokens used out of the total. A token is a small piece of text, about ¾ of a word. |
 | `▁▁▂▂▃▆······` | A chart of the last 12 turns. Dots are turns not taken yet. |
@@ -28,7 +29,7 @@ A live "weather report" above the prompt: how full Claude's memory is, and how m
 | Part | Meaning |
 |---|---|
 | `Session` / `Week` | Your 5-hour limit and your weekly limit. |
-| `95%` | How much of that limit you've used. |
+| `95%` | How much of that limit you've used. The bar turns red at 90% and up. |
 | `▲ +0.2% last turn` | What your last turn used. |
 | `+0.1% this turn` | What the running turn has used so far (only while Claude works). |
 | `resets in 37m (6:30pm)` | Time left until the limit resets, then the clock time. |
@@ -68,5 +69,6 @@ npx -p typescript tsc -p .   # type check
   - `measuring…`: right after a compaction, `/clear` or `/resume`, until the next reply.
   - `↺ reset this turn` / `↺ reset last turn`: the limit reset during that turn.
   - `window reset`: the limit's reset time has passed, until a new reading arrives.
+  - `↻ switched from Opus 5.5`: the model changed (`/model`, or an automatic fallback). Stays until one whole turn has run on the new model. Helper agents' models never count.
 - **New session:** the bars show the last readings saved by an earlier session until Claude replies.
 - **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings.

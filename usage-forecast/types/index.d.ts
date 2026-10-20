@@ -37,6 +37,14 @@ export type Weather = {
   rates: Record<string, number>
   /** Clock reading of the last refresh. */
   now: number
+  /** The main loop's model id as the engine gave it; null before the first. */
+  model: string | null
+  /** The effort level of the last main request; null when unknown or the model takes none. */
+  effort: string | null
+  /** The model's name before a switch, shown until a whole turn ran after it. */
+  switchedFrom: string | null
+  /** A turn has started since the switch, so its end clears the note. */
+  switchSeen: boolean
 }
 
 declare module 'claude-code' {

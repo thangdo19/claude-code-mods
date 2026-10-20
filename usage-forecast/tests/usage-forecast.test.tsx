@@ -5,12 +5,14 @@ import {
   addSpend,
   fmtLeft,
   fmtLimitDelta,
+  fmtModel,
   fmtReset,
   fmtTokens,
   learnRate,
   limitDeltas,
   pushHistory,
   reviveLimits,
+  sameModel,
   sparkline,
   spendSince,
   turnDelta,
@@ -102,6 +104,28 @@ describe('helpers', () => {
     expect(fmtLimitDelta(0.5, 'this')).toBe('+0.5% this turn')
     expect(fmtLimitDelta(0, 'this')).toBe('')
     expect(fmtLimitDelta(-1, 'this')).toBe('↺ reset this turn')
+  })
+
+  test('model names', () => {
+    expect(fmtModel('claude-opus-5-5')).toBe('Opus 5.5')
+    expect(fmtModel('claude-opus-5-5[1m]')).toBe('Opus 5.5')
+    expect(fmtModel('claude-sonnet-4-5-20250929')).toBe('Sonnet 4.5')
+    expect(fmtModel('claude-opus-4-20250514')).toBe('Opus 4')
+    expect(fmtModel('claude-3-5-sonnet-20241022')).toBe('Sonnet 3.5')
+    expect(fmtModel('us.anthropic.claude-haiku-5-5-v1:0')).toBe('Haiku 5.5')
+    expect(fmtModel('claude-fable-5-1@20260901')).toBe('Fable 5.1')
+    expect(fmtModel('opus')).toBe('Opus')
+    expect(fmtModel('sonnet[1m]')).toBe('Sonnet')
+    // A family this mod has never heard of reads the same way.
+    expect(fmtModel('claude-lyric-6-1')).toBe('Lyric 6.1')
+    expect(fmtModel('claude-4-lyric-20270101')).toBe('Lyric 4')
+    expect([fmtModel(''), fmtModel('default'), fmtModel('<synthetic>')]).toEqual([null, null, null])
+    expect(fmtModel('gateway/my-model')).toBe('my-model')
+    expect(fmtModel('a-very-long-custom-model-name-v2')).toBe('a-very-long-custom-mode…')
+    expect(sameModel('Opus', 'Opus 5.5')).toBe(true)
+    expect(sameModel('Opus 5.5', 'Opus')).toBe(true)
+    expect(sameModel('Opus 5.5', 'Opus 4')).toBe(false)
+    expect(sameModel('Opus', 'Sonnet 5.5')).toBe(false)
   })
 
   test('own spend only grows, even when the session total starts over', () => {
@@ -614,5 +638,137 @@ describe('edge cases', () => {
     expect(bar?.props.dimColor).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^Session/ }))?.props.dimColor).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /as of/ })).toBeUndefined()
+  })
+
+  test('a limit at 90% or more draws red; with no model name the band still draws', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.store(on)
+    harness(on, { tokens: 40000, limits: [limit('five_hour', 90), limit('seven_day', 89.9)] })
+    await start($)
+    const ui = await $.ui.mount({ ...band, props: props(false) })
+    expect((await ui.find({ type: 'Text', text: /^ 90%$/ }))?.props.color).toBe('red')
+    expect((await ui.find({ type: 'Text', text: /^ 89\.9%$/ }))?.props.color).toBe('claude')
+    expect(await ui.find({ type: 'Text', text: /◆/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Clear/ })).toBeDefined()
+  })
+
+  describe('the model', () => {
+    const switchTo = ($: Engine, from: string, to: string, extra: Record<string, unknown> = {}) =>
+      $.classic.PostModelSwitch({
+        from_model: from, to_model: to, requested_model: null, source: 'command', context_tokens: 0,
+        prompt_cache_warm: false, cache_ttl: '5m', estimated_cache_write_usd: 0, pricing: 'catalog', ...extra,
+      } as never)
+    const stepOn = async ($: Engine, turnId: string, model: string, extra: Record<string, unknown> = {}) => {
+      for await (const _ of $.turn.step({ turnId, index: 0, model, messageCount: 1, ...extra } as never)) void _
+    }
+    const turn = async ($: Engine, turnId: string, model: string) => {
+      await $.turn.start({ text: 'hi', turnId })
+      await stepOn($, turnId, model, { effort: 'high' })
+      await complete($, turnId)
+    }
+    const mounted = ($: Engine) => $.ui.mount({ ...band, props: props(false) })
+    const setup = (on: Parameters<TestBody>[1], model: string) => {
+      mock.clock(on, { now: NOW })
+      mock.store(on)
+      on('session.model', () => ({ value: model }) as never)
+      on('classic.PostModelSwitch', () => ({}) as never)
+      return harness(on, { tokens: 40000 })
+    }
+
+    test('shows first, effort from the first main request; a subagent does not change it', async ($, on) => {
+      setup(on, 'opus')
+      await start($)
+      let ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /^◆ Opus$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /high/ })).toBeUndefined()
+
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await stepOn($, 't1', 'claude-opus-5-5', { effort: 'high' })
+      await stepOn($, 't1', 'claude-haiku-5-5', { agentId: 'a1', effort: 'low' })
+      ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /^◆ Opus 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^ high$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Haiku|low|switched/ })).toBeUndefined()
+
+      // A model that takes no effort drops it.
+      await stepOn($, 't1', 'claude-opus-5-5')
+      expect(await (await mounted($)).find({ type: 'Text', text: /high/ })).toBeUndefined()
+    })
+
+    test('a switch shows at once and stays through one whole turn', async ($, on) => {
+      setup(on, 'claude-opus-5-5')
+      await start($)
+      await turn($, 't1', 'claude-opus-5-5')
+      await switchTo($, 'claude-opus-5-5', 'claude-sonnet-5-5')
+
+      let ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /^◆ Sonnet 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^↻ switched from Opus 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /last turn/ })).toBeUndefined()
+      // The old effort may not apply to the new model.
+      expect(await ui.find({ type: 'Text', text: /high/ })).toBeUndefined()
+
+      // Cancelled before any reply: not a turn on the new model.
+      await $.turn.start({ text: 'oops', turnId: 't2' })
+      await complete($, 't2', { reason: 'aborted', isAborted: true })
+      expect(await (await mounted($)).find({ type: 'Text', text: /switched from/ })).toBeDefined()
+
+      await turn($, 't3', 'claude-sonnet-5-5')
+      ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /switched from/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /last turn/ })).toBeDefined()
+    })
+
+    test('switching back, to the same model, or in a subagent leaves no note', async ($, on) => {
+      setup(on, 'claude-opus-5-5')
+      await start($)
+      await switchTo($, 'claude-opus-5-5', 'claude-sonnet-5-5')
+      await switchTo($, 'claude-sonnet-5-5', 'claude-opus-5-5')
+      await switchTo($, 'claude-opus-5-5', 'claude-opus-5-5[1m]')
+      await switchTo($, 'claude-opus-5-5', 'claude-haiku-5-5', { agent_id: 'a1' })
+      const ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /^◆ Opus 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /switched from/ })).toBeUndefined()
+    })
+
+    test('an alias that resolves to another family at the first request is no switch', async ($, on) => {
+      setup(on, 'opusplan')
+      await start($)
+      expect(await (await mounted($)).find({ type: 'Text', text: /^◆ Opusplan$/ })).toBeDefined()
+      await turn($, 't1', 'claude-sonnet-5-5')
+      const ui = await mounted($)
+      expect(await ui.find({ type: 'Text', text: /^◆ Sonnet 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /switched from/ })).toBeUndefined()
+    })
+
+    test('a switch during a turn shows through the next whole turn', async ($, on) => {
+      setup(on, 'claude-opus-5-5')
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await stepOn($, 't1', 'claude-opus-5-5')
+      await switchTo($, 'claude-opus-5-5', 'claude-sonnet-5-5', { source: 'auto' })
+      await complete($, 't1')
+      expect(await (await mounted($)).find({ type: 'Text', text: /^↻ switched from Opus 5\.5$/ })).toBeDefined()
+
+      await turn($, 't2', 'claude-sonnet-5-5')
+      expect(await (await mounted($)).find({ type: 'Text', text: /switched from/ })).toBeUndefined()
+    })
+
+    test('a new switch after a turn on the last one names the model just left', async ($, on) => {
+      setup(on, 'claude-opus-5-5')
+      await start($)
+      await switchTo($, 'claude-opus-5-5', 'claude-sonnet-5-5')
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await switchTo($, 'claude-sonnet-5-5', 'claude-haiku-5-5', { source: 'auto' })
+      await complete($, 't1')
+      expect(await (await mounted($)).find({ type: 'Text', text: /^↻ switched from Sonnet 5\.5$/ })).toBeDefined()
+    })
+
+    test('/clear keeps the model', async ($, on) => {
+      setup(on, 'claude-opus-5-5')
+      await start($)
+      await $.session.end({ reason: 'clear', sessionId: 's', resume: {} } as never)
+      expect(await (await mounted($)).find({ type: 'Text', text: /^◆ Opus 5\.5$/ })).toBeDefined()
+    })
   })
 })

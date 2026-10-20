@@ -6,13 +6,17 @@ import {
   addSpend,
   fmtLeft,
   fmtLimitDelta,
+  fmtModel,
   fmtPct,
   fmtReset,
   fmtTokens,
+  HOT_PCT,
+  isAlias,
   LIMIT_LABELS,
   percentOf,
   pushHistory,
   reviveLimits,
+  sameModel,
   sparkline,
   usageCells,
   weatherFor,
@@ -41,6 +45,10 @@ const EMPTY: Weather = {
   turnStartSpent: null,
   rates: {},
   now: 0,
+  model: null,
+  effort: null,
+  switchedFrom: null,
+  switchSeen: false,
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
 
@@ -63,6 +71,7 @@ const NO_LIMITS = { limits: [], limitsAsOf: null, turnStartLimits: null, lastLim
 
 const TRACK = '#4a2e25'
 const LABEL_WIDTH = 9
+const MODEL_COLOR = 'permission'
 
 type Usage = { context: SessionContextUsage; rateLimits: SessionRateLimit[]; cost?: SessionCost }
 
@@ -83,6 +92,25 @@ const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
     limitsAsOf: live.length > 0 ? null : w.limitsAsOf,
     now,
   }
+}
+
+/**
+ * The main loop now runs `id`. A real change (not an alias gaining its
+ * version) notes the model before it, kept from a switch no turn has run
+ * on yet; switching back to that one drops the note.
+ */
+const withModel = (w: Weather, id: string): Weather => {
+  const next = fmtModel(id)
+  if (next === null) return w
+  const prev = w.model === null ? null : fmtModel(w.model)
+  // An alias resolving ("opusplan" → "Opus 5.5") is no switch.
+  if (prev === null || (isAlias(prev) && !isAlias(next))) return { ...w, model: id }
+  // The same model: keep the fuller name ("Opus 5.5" over the alias "Opus").
+  if (sameModel(prev, next)) return next.length >= prev.length ? { ...w, model: id } : w
+  const from = w.switchedFrom !== null && !w.switchSeen ? w.switchedFrom : prev
+  const switched = sameModel(from, next) ? null : from
+  // The old effort may not apply to the new model: unknown until its first request.
+  return { ...w, model: id, effort: null, switchedFrom: switched, switchSeen: false }
 }
 
 async function saveLimits($: EngineInterface, usage: Usage, now: number) {
@@ -166,6 +194,8 @@ export const register: Register = on => {
     })
 
     try {
+      // A hot reload over state saved by an older version: its new fields start empty.
+      await update($, weather, cur => ({ ...EMPTY, ...cur }))
       const now = await $.clock.now()
       const w = await read($, weather)
       if (!w.instanceId) {
@@ -198,6 +228,16 @@ export const register: Register = on => {
     } catch {
       // No first reading: the band fills in from the first response.
     }
+
+    // Outside the gate above, so a hot reload of an older state fills it too.
+    try {
+      if ((await read($, weather)).model === null) {
+        const model = await $.session.model()
+        await update($, weather, cur => (cur.model === null ? withModel(cur, model) : cur))
+      }
+    } catch {
+      // No name yet: the first request names it.
+    }
     return result
   })
 
@@ -220,6 +260,8 @@ export const register: Register = on => {
           turnStartTokens: w.tokens,
           turnStartSpent: w.spent,
           turnStartLimits: base ? Object.fromEntries(base.map(l => [l.kind, l.percentUsed])) : null,
+          // A turn on the new model has begun: its end clears the switch note.
+          switchSeen: w.switchedFrom !== null && e.agentId === undefined ? true : w.switchSeen,
         }
       })
     } catch {
@@ -230,6 +272,15 @@ export const register: Register = on => {
 
   // Live: every model response, mid-turn included, refreshes the figures.
   on('turn.step', async function* ($, e, next) {
+    // The main loop's model and effort as sent; a subagent's are its own.
+    if (e.agentId === undefined) {
+      try {
+        const effort = typeof e.effort === 'string' ? e.effort : null
+        await update($, weather, cur => ({ ...withModel(cur, e.model), effort }))
+      } catch {
+        // The name stays as it was until the next request.
+      }
+    }
     const result = yield* next(e)
     try {
       await applyUsage($, await $.session.usage(), false)
@@ -267,6 +318,8 @@ export const register: Register = on => {
           lastDeltaCompacted: measured ? w.compacted : w.lastDeltaCompacted,
           compacted: measured ? false : w.compacted,
           lastLimitDelta: lastDeltas(w),
+          // A whole turn ran on the new model: the switch note has been read.
+          ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
       })
       if (usage) await saveLimits($, usage, now)
@@ -275,6 +328,13 @@ export const register: Register = on => {
     }
     return result
   })
+
+  // /model, the picker, a fallback: the band shows the new model at once.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    if (e.agent_id === undefined) await update($, weather, w => withModel(w, e.to_model))
+    return next(e)
+    // Only observes: a failure here must never block the switch.
+  }).catch(($, e, next) => next(e))
 
   // Pushed after each main turn and whenever a limit moves a whole point.
   on('session.measure', async ($, e, next) => {
@@ -318,6 +378,10 @@ export const register: Register = on => {
         spent: w.spent,
         rates: w.rates,
         now: w.now,
+        model: w.model,
+        effort: w.effort,
+        switchedFrom: w.switchedFrom,
+        switchSeen: w.switchSeen,
       }))
     } else if (e.reason === 'logout') {
       await update($, weather, w => ({ ...w, ...NO_LIMITS }))
@@ -329,10 +393,20 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const w = await read($, weather)
-    if (w.window === 0 && w.limits.length === 0) return next(e)
+    // Loose checks: state from an older version may lack these until session.start fills them.
+    const name = w.model == null ? null : fmtModel(w.model)
+    if (w.window === 0 && w.limits.length === 0 && name === null) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
     const working = e.props.isWorking
+
+    // Line 1 opens with the model, so a narrow terminal's cut never hides it.
+    const model = name && (
+      <Text color={MODEL_COLOR}>
+        <Text bold>◆ {name}</Text>
+        {w.effort && <Text>{` ${w.effort}`}</Text>}
+      </Text>
+    )
 
     // Line 1: the context window.
     const known = w.tokens !== null
@@ -340,8 +414,10 @@ export const register: Register = on => {
     const level = weatherFor(pct)
     const bars = sparkline(w.history, w.window)
     let tail = null
+    // For one turn after a model change, that says more than any figure.
+    if (w.switchedFrom != null) tail = <Text color={MODEL_COLOR}>↻ switched from {w.switchedFrom}</Text>
     // Unknown until the next response: right after a compaction, a /clear or a /resume.
-    if (!known) tail = <Text dimColor>measuring…</Text>
+    else if (!known) tail = <Text dimColor>measuring…</Text>
     else if (w.isEstimate) tail = <Text dimColor>waiting for first reply</Text>
     else if (w.lastDelta !== null) {
       if (w.lastDelta < 0 && w.lastDeltaCompacted)
@@ -356,8 +432,12 @@ export const register: Register = on => {
     }
 
     const context =
-      w.window === 0 ? null : (
+      w.window === 0 ? (
+        model && <Text wrap="truncate">{model}</Text>
+      ) : (
         <Text wrap="truncate">
+          {model}
+          {model && <Text dimColor>{'  │  '}</Text>}
           <Text color={level.color} bold>
             {level.icon} {level.word}
           </Text>
@@ -403,15 +483,17 @@ export const register: Register = on => {
       // Counted from the last refresh; the minute timer keeps it current.
       const at = limit.resetsAt ? fmtReset(limit.resetsAt, kind === 'seven_day') : ''
       const reset = at ? `in ${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} (${at})` : ''
+      // Nearly gone: the bar and its figure turn red, as the context line does.
+      const fill = limit.percentUsed >= HOT_PCT ? 'red' : 'claude'
       return [
         <Text key={kind} wrap="truncate">
           <Text color="claude" bold>
             {LIMIT_LABELS[kind].padEnd(LABEL_WIDTH)}
           </Text>
-          <Text color="claude" backgroundColor={TRACK}>
+          <Text color={fill} backgroundColor={TRACK}>
             {usageCells(limit.percentUsed, width)}
           </Text>
-          <Text color="claude" bold>
+          <Text color={fill} bold>
             {' '}
             {fmtPct(limit.percentUsed)}%
           </Text>

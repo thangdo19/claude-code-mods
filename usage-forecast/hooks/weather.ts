@@ -56,6 +56,38 @@ export const usageCells = (pct: number, width: number): string => {
 
 export const LIMIT_LABELS = { five_hour: 'Session', seven_day: 'Week' } as const
 
+/** A limit used this much draws red. */
+export const HOT_PCT = 90
+
+const MODEL_MAX = 24
+const family = (f: string) => f.charAt(0).toUpperCase() + f.slice(1)
+
+/**
+ * A model id as a short name, any family: "claude-opus-5-5[1m]" → "Opus 5.5",
+ * an alias "opus" → "Opus", another id as given (cut to 24); null for none.
+ */
+export const fmtModel = (id: string): string | null => {
+  const raw = id.trim().replace(/\[[^\]]*\]$/, '')
+  const lower = raw.toLowerCase()
+  if (lower === '' || lower === 'default' || lower === '<synthetic>') return null
+  if (/^[a-z]+$/.test(lower)) return family(lower)
+  // claude-opus-5-5, claude-opus-4-20250514 (a date is never the minor), us.anthropic.…-v1:0, …@date.
+  const m = /claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(lower)
+  if (m) return `${family(m[1]!)} ${m[2]}${m[3] ? '.' + m[3] : ''}`
+  // The older order: claude-3-5-sonnet-20241022.
+  const old = /claude-(\d+)(?:-(\d{1,2}))?-([a-z]+)/.exec(lower)
+  if (old) return `${family(old[3]!)} ${old[1]}${old[2] ? '.' + old[2] : ''}`
+  const last = raw.split('/').at(-1) || raw
+  return last.length > MODEL_MAX ? last.slice(0, MODEL_MAX - 1) + '…' : last
+}
+
+/** A name with no version: an alias ("Opus", "Opusplan") the engine has yet to resolve. */
+export const isAlias = (name: string): boolean => !/\d/.test(name)
+
+/** The same model, an alias ("Opus") matching its full name ("Opus 5.5") too. */
+export const sameModel = (a: string, b: string): boolean =>
+  a === b || (isAlias(a) && b.startsWith(a + ' ')) || (isAlias(b) && a.startsWith(b + ' '))
+
 const pad2 = (n: number) => String(n).padStart(2, '0')
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
