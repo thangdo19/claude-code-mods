@@ -41,6 +41,7 @@ const EMPTY: Weather = {
   lastLimitDelta: {},
   instanceId: '',
   usd: null,
+  costFrom: null,
   spent: 0,
   turnStartSpent: null,
   rates: {},
@@ -58,7 +59,9 @@ type Saved = { limits: Limit[]; at: number }
 // Each session's spend under its own key, so no two sessions write one key;
 // the learned rates beside them.
 const SPEND_PREFIX = 'spend.'
-const RATES_KEY = 'rates'
+const RATES_KEY = 'rates.v2'
+// Rates learned before a /clear's spend was counted: too high, so dropped.
+const OLD_RATES_KEY = 'rates'
 type SpendEntry = { usd: number; at: number }
 type Rates = Record<string, Anchor>
 // A session idle this long has stopped: its entry goes.
@@ -73,7 +76,12 @@ const TRACK = '#4a2e25'
 const LABEL_WIDTH = 9
 const MODEL_COLOR = 'permission'
 
-type Usage = { context: SessionContextUsage; rateLimits: SessionRateLimit[]; cost?: SessionCost }
+// `startedAt` tells a new cost ledger (a /clear, a resume) from a stale reading.
+type Usage = { startedAt?: number; context: SessionContextUsage; rateLimits: SessionRateLimit[]; cost?: SessionCost }
+
+// The id this session's spend is saved under. No session.start follows a
+// /clear, so a turn makes one too when the state has none.
+const withInstance = (w: Weather): Weather => (w.instanceId ? w : { ...w, instanceId: crypto.randomUUID() })
 
 const copyLimits = (limits: readonly SessionRateLimit[]): Limit[] =>
   limits.map(({ kind, percentUsed, resetsAt }) => (resetsAt === undefined ? { kind, percentUsed } : { kind, percentUsed, resetsAt }))
@@ -83,7 +91,7 @@ const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
   const live = reviveLimits(copyLimits(usage.rateLimits), now)
   return {
     ...w,
-    ...(usage.cost ? addSpend(w, usage.cost.usd) : {}),
+    ...(usage.cost ? addSpend(w, usage.cost.usd, usage.startedAt) : {}),
     window: usage.context.window || w.window,
     // No figure yet keeps what we had: the start estimate, or null after a compaction.
     tokens: usage.context.tokens ?? w.tokens,
@@ -136,6 +144,7 @@ async function learn($: EngineInterface, live: readonly Limit[], now: number): P
 
   const spend: Spend = {}
   for (const key of await $.store.keys()) {
+    if (key === OLD_RATES_KEY) await $.store.delete(key)
     if (!key.startsWith(SPEND_PREFIX)) continue
     const entry = (await $.store.get(key)) as SpendEntry | undefined
     if (!entry) continue
@@ -197,11 +206,7 @@ export const register: Register = on => {
       // A hot reload over state saved by an older version: its new fields start empty.
       await update($, weather, cur => ({ ...EMPTY, ...cur }))
       const now = await $.clock.now()
-      const w = await read($, weather)
-      if (!w.instanceId) {
-        const instanceId = crypto.randomUUID()
-        await update($, weather, cur => ({ ...cur, instanceId }))
-      }
+      const w = await update($, weather, withInstance)
       // A hot reload fires session.start again: keep what this session measured.
       if (w.window === 0) {
         // Counted as /context counts it; the local estimate if that fails.
@@ -215,7 +220,7 @@ export const register: Register = on => {
         const rates = await learn($, [], now).catch(() => ({}))
         await update($, weather, cur => ({
           ...cur,
-          ...(usage.cost ? addSpend(cur, usage.cost.usd) : {}),
+          ...(usage.cost ? addSpend(cur, usage.cost.usd, usage.startedAt) : {}),
           rates,
           window: usage.context.window,
           tokens: usage.context.tokens ?? estimate ?? null,
@@ -250,7 +255,7 @@ export const register: Register = on => {
       const fresh = saved && now - saved.at < FRESH_MS ? saved : undefined
       const rates = await learn($, [], now).catch(() => undefined)
       await update($, weather, cur => {
-        const w = usage ? withUsage(cur, usage, now) : cur
+        const w = withInstance(usage ? withUsage(cur, usage, now) : cur)
         // Limits from an earlier session are not a fair baseline; another
         // session's reading from just now is.
         const base = w.limitsAsOf === null ? w.limits : fresh?.limits
@@ -347,7 +352,9 @@ export const register: Register = on => {
         // Shown again at the next reading.
       }
     }
-    await applyUsage($, e, true)
+    // Its cost carries no ledger start, so a stale one can't be told from a
+    // /clear: spend is read where `$.session.usage()` gives one.
+    await applyUsage($, { context: e.context, rateLimits: e.rateLimits }, true)
     return next(e)
   })
 
@@ -375,6 +382,7 @@ export const register: Register = on => {
         lastLimitDelta: w.lastLimitDelta,
         instanceId: w.instanceId,
         usd: w.usd,
+        costFrom: w.costFrom,
         spent: w.spent,
         rates: w.rates,
         now: w.now,

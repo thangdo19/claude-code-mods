@@ -29,6 +29,8 @@ export type Weather = {
   instanceId: string
   /** The session's own $ total at the last reading; null before the first. */
   usd: number | null
+  /** When the ledger behind `usd` began (`startedAt`); a new one (a /clear, a resume) is counted afresh. */
+  costFrom: number | null
   /** $ this session spent since it started here, growing even when `usd` starts over. */
   spent: number
   /** `spent` when the running turn began; null between turns. */

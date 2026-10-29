@@ -58,7 +58,7 @@ npx -p typescript tsc -p .   # type check
 
 - The limit bars need a Claude subscription login. With an API key they stay hidden.
 - Limits come in whole points, so a small turn often reads `<1%`.
-- It only counts Claude Code on this computer. Using claude.ai or another computer at the same time makes the per-turn figures read a little high.
+- It only counts Claude Code on this computer. Using claude.ai or another computer at the same time makes the per-turn figures read a little high, but never more than the whole account moved (plus 1 point, since readings are whole points).
 
 ## Details
 

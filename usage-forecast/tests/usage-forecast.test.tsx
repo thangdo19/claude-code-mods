@@ -128,10 +128,17 @@ describe('helpers', () => {
     expect(sameModel('Opus', 'Sonnet 5.5')).toBe(false)
   })
 
-  test('own spend only grows, even when the session total starts over', () => {
-    expect(addSpend({ usd: null, spent: 0 }, 4)).toEqual({ usd: 4, spent: 0 })
-    expect(addSpend({ usd: 4, spent: 0 }, 5.5)).toEqual({ usd: 5.5, spent: 1.5 })
-    expect(addSpend({ usd: 5.5, spent: 1.5 }, 0.25)).toEqual({ usd: 0.25, spent: 1.75 })
+  test('own spend only grows: a new ledger counts afresh, a stale reading adds nothing', () => {
+    const at = NOW
+    expect(addSpend({ usd: null, spent: 0, costFrom: null }, 4, at)).toEqual({ usd: 4, spent: 0, costFrom: at })
+    expect(addSpend({ usd: 4, spent: 0, costFrom: at }, 5.5, at)).toEqual({ usd: 5.5, spent: 1.5, costFrom: at })
+    // An older reading landing late: not a restart, so nothing is added twice.
+    expect(addSpend({ usd: 5.5, spent: 1.5, costFrom: at }, 5.2, at)).toEqual({ usd: 5.5, spent: 1.5, costFrom: at })
+    expect(addSpend({ usd: 5.5, spent: 1.5, costFrom: at }, 5.2)).toEqual({ usd: 5.5, spent: 1.5, costFrom: at })
+    // A /clear starts a new ledger: its total counts from here.
+    expect(addSpend({ usd: 5.5, spent: 1.5, costFrom: at }, 0.25, at + 1)).toEqual({ usd: 0.25, spent: 1.5, costFrom: at + 1 })
+    // State from an older version has no ledger start yet.
+    expect(addSpend({ usd: 4, spent: 1, costFrom: null }, 5, at)).toEqual({ usd: 5, spent: 2, costFrom: at })
   })
 
   test('spend since a snapshot counts every session, new ones in full', () => {
@@ -161,6 +168,11 @@ describe('helpers', () => {
     expect(turnDelta(14, 10, 0.5, undefined)).toBe(4)
     expect(turnDelta(14, undefined, 0.5, undefined)).toBeUndefined()
     expect(turnDelta(2, 95, 0.5, 2)).toBe(-93)
+    // A rate too high (spend it never saw) can't top the account's move, nor the window.
+    expect(turnDelta(26, 20, 11, 12.9)).toBe(7)
+    expect(turnDelta(26, undefined, 11, 12.9)).toBe(26)
+    expect(turnDelta(20, 20, 0.5, 2)).toBe(1)
+    expect(turnDelta(0, undefined, 0.5, 2)).toBe(0)
   })
 })
 
@@ -566,7 +578,7 @@ describe('edge cases', () => {
     mock.clock(on, { now: NOW })
     // Another session learned 2% per dollar and is spending too.
     const saved = sharedStore(on, {
-      rates: { five_hour: { rate: 2, pct: 10, resetsAt: RESET, snap: {} } },
+      'rates.v2': { five_hour: { rate: 2, pct: 10, resetsAt: RESET, snap: {} } },
       'spend.other': { usd: 3, at: NOW },
     })
     const s = harness(on, { tokens: 40000, limits: [limit('five_hour', 10)] })
@@ -590,7 +602,7 @@ describe('edge cases', () => {
     const idle = await $.ui.mount({ ...band, props: props(false) })
     // Both sessions' $3.5 moved 4 points: the rate is relearned from them,
     // and this session's $0.5 comes to 0.6 of the 4.
-    expect((saved.rates as Record<string, { rate: number }>).five_hour?.rate).toBe(4 / 3.5)
+    expect((saved['rates.v2'] as Record<string, { rate: number }>).five_hour?.rate).toBe(4 / 3.5)
     expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last turn/ })).toBeDefined()
   })
 
@@ -598,7 +610,7 @@ describe('edge cases', () => {
     mock.clock(on, { now: NOW })
     sharedStore(on, {
       lastLimits: { at: NOW - 10 * 60_000, limits: [limit('five_hour', 30)] },
-      rates: { five_hour: { rate: 1.5, pct: 20, resetsAt: RESET, snap: {} } },
+      'rates.v2': { five_hour: { rate: 1.5, pct: 20, resetsAt: RESET, snap: {} } },
     })
     const s = harness(on, { tokens: 40000 })
     s.usage = { ...s.usage, cost: { usd: 2 } } as typeof s.usage
@@ -611,6 +623,29 @@ describe('edge cases', () => {
     await complete($, 't1')
     const idle = await $.ui.mount({ ...band, props: props(false) })
     expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last turn/ })).toBeDefined()
+  })
+
+  test('after a /clear, spend is saved again and no rate shows more than the account moved', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    // Rates from before: the old key goes; the new one is far too high, as
+    // when a session's spend went uncounted.
+    const saved = sharedStore(on, {
+      rates: { five_hour: { rate: 12.9, pct: 0, resetsAt: RESET, snap: {} } },
+      'rates.v2': { five_hour: { rate: 12.9, pct: 0, resetsAt: RESET, snap: {} } },
+    })
+    const s = harness(on, { tokens: 40000, limits: [limit('five_hour', 20)] })
+    s.usage = { ...s.usage, cost: { usd: 0 } } as typeof s.usage
+    // No session.start: a /clear raises none, and its state may start empty.
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    s.usage = { ...s.usage, rateLimits: [limit('five_hour', 26)], cost: { usd: 11 } } as typeof s.usage
+    await step($, 't1')
+    await complete($, 't1')
+
+    const own = Object.keys(saved).find(k => k.startsWith('spend.'))
+    expect(saved[own!]).toEqual({ usd: 11, at: NOW })
+    expect(saved.rates).toBeUndefined()
+    const idle = await $.ui.mount({ ...band, props: props(false) })
+    expect(await idle.find({ type: 'Text', text: /▲ \+7% last turn/ })).toBeDefined()
   })
 
   test("before any rate, another session's reading from just now is the baseline", async ($, on) => {

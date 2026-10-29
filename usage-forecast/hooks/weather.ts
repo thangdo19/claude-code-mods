@@ -132,13 +132,20 @@ export const fmtLimitDelta = (delta: number, span: 'this' | 'last'): string => {
   return span === 'last' ? '▲ <1% last turn' : ''
 }
 
+type Ledger = { usd: number | null; spent: number; costFrom: number | null }
+
 /**
  * This session's running spend after a new cost reading: `usd` is the
- * session's own total, which can start over (a /clear), so `spent` only grows.
+ * session's own total, counted from `startedAt`. A new ledger (a /clear, a
+ * resume) or the first reading counts from there; a total lower than one
+ * already counted is a stale reading and adds nothing, so `spent` only grows.
  */
-export const addSpend = (prev: { usd: number | null; spent: number }, usd: number): { usd: number; spent: number } => {
-  if (prev.usd === null) return { usd, spent: prev.spent }
-  return { usd, spent: prev.spent + (usd >= prev.usd ? usd - prev.usd : usd) }
+export const addSpend = (prev: Ledger, usd: number, startedAt?: number): Ledger => {
+  const costFrom = startedAt ?? prev.costFrom
+  if (prev.usd === null || (startedAt !== undefined && prev.costFrom !== null && startedAt !== prev.costFrom))
+    return { usd, spent: prev.spent, costFrom }
+  if (usd <= prev.usd) return { usd: prev.usd, spent: prev.spent, costFrom }
+  return { usd, spent: prev.spent + usd - prev.usd, costFrom }
 }
 
 /** Every running session's spend, by instance id, as the store holds it. */
@@ -182,6 +189,10 @@ export const learnRate = (
  * A limit's change over a turn: this session's own share when a rate is
  * known (at least 0.1 once it spent anything), the account's change
  * otherwise. A window that reset since `startPct` reads negative either way.
+ *
+ * The share never tops what the account moved (whole-point readings hide
+ * up to one more) nor what the window holds: a rate learned while some
+ * spend went uncounted (claude.ai, another computer) reads too high.
  */
 export const turnDelta = (
   percentUsed: number,
@@ -190,7 +201,11 @@ export const turnDelta = (
   rate: number | undefined,
 ): number | undefined => {
   if (startPct !== undefined && percentUsed < startPct) return Math.round((percentUsed - startPct) * 10) / 10
-  if (rate !== undefined && spent !== null) return spent > 0 ? Math.max(0.1, Math.round(spent * rate * 10) / 10) : 0
+  if (rate !== undefined && spent !== null) {
+    if (spent <= 0) return 0
+    const cap = startPct === undefined ? percentUsed : Math.min(percentUsed, percentUsed - startPct + 1)
+    return Math.round(Math.min(Math.max(0.1, Math.round(spent * rate * 10) / 10), cap) * 10) / 10
+  }
   return startPct === undefined ? undefined : Math.round((percentUsed - startPct) * 10) / 10
 }
 
