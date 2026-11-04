@@ -1,9 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
-import type { Limit, Weather } from '../types'
+import type { Agent, Limit, Weather, WindowStart } from '../types'
 import {
   addSpend,
+  AGENT_ICONS,
+  agentEntries,
+  endStatus,
+  fitItems,
+  fmtSplit,
+  LIMIT_KINDS,
+  sameWindow,
+  shareOf,
+  splitDelta,
+  statusOf,
+  tintCells,
   fmtLeft,
   fmtLimitDelta,
   fmtModel,
@@ -18,13 +29,12 @@ import {
   reviveLimits,
   sameModel,
   sparkline,
-  usageCells,
   weatherFor,
   learnRate,
   turnDelta,
   HISTORY,
 } from './weather'
-import type { Anchor, Spend } from './weather'
+import type { AgentEntry, Anchor, BarPart, Spend } from './weather'
 
 const EMPTY: Weather = {
   tokens: null,
@@ -50,6 +60,16 @@ const EMPTY: Weather = {
   effort: null,
   switchedFrom: null,
   switchSeen: false,
+  agents: {},
+  forks: [],
+  agentSpent: 0,
+  turnStartAgentSpent: null,
+  lastAgentShare: null,
+  idleAgentSpent: null,
+  compactSpent: 0,
+  lastCompactSpent: null,
+  windowStart: {},
+  clearedAt: null,
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
 
@@ -75,6 +95,15 @@ const NO_LIMITS = { limits: [], limitsAsOf: null, turnStartLimits: null, lastLim
 const TRACK = '#4a2e25'
 const LABEL_WIDTH = 9
 const MODEL_COLOR = 'permission'
+const AGENT_COLOR = '#5fb8b4'
+// The tinted bar: the account's other usage, then this session's own, then its agents'.
+const PART_COLORS = {
+  cool: { other: '#8f4f3a', you: 'claude', agents: AGENT_COLOR },
+  hot: { other: '#a33b4b', you: 'red', agents: AGENT_COLOR },
+} as const
+const ICON_COLORS = { running: AGENT_COLOR, done: 'green', failed: 'red', killed: undefined, idle: undefined } as const
+// Engine forks seen (compaction, memory), kept so each is looked up once.
+const MAX_FORKS = 32
 
 // `startedAt` tells a new cost ledger (a /clear, a resume) from a stale reading.
 type Usage = { startedAt?: number; context: SessionContextUsage; rateLimits: SessionRateLimit[]; cost?: SessionCost }
@@ -86,12 +115,28 @@ const withInstance = (w: Weather): Weather => (w.instanceId ? w : { ...w, instan
 const copyLimits = (limits: readonly SessionRateLimit[]): Limit[] =>
   limits.map(({ kind, percentUsed, resetsAt }) => (resetsAt === undefined ? { kind, percentUsed } : { kind, percentUsed, resetsAt }))
 
+// Each live window, with this session's spend when it was first seen in it.
+const windowsOf = (w: Weather, live: readonly Limit[]): Record<string, WindowStart> => {
+  const next = { ...w.windowStart }
+  for (const limit of live) {
+    const start = next[limit.kind]
+    if (start && sameWindow(start.resetsAt, limit.resetsAt)) continue
+    const base = { spent: w.spent, agentSpent: w.agentSpent }
+    next[limit.kind] = limit.resetsAt === undefined ? base : { ...base, resetsAt: limit.resetsAt }
+  }
+  return next
+}
+
 const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
   // The last response's reading stays put after its window resets: fresh again.
   const live = reviveLimits(copyLimits(usage.rateLimits), now)
+  const ledger = usage.cost ? addSpend(w, usage.cost.usd, usage.startedAt, w.clearedAt) : undefined
   return {
     ...w,
-    ...(usage.cost ? addSpend(w, usage.cost.usd, usage.startedAt) : {}),
+    ...ledger,
+    // A /clear's mark is spent once its ledger's first reading is in.
+    clearedAt: ledger && ledger.costFrom !== w.costFrom ? null : w.clearedAt,
+    windowStart: windowsOf(w, live),
     window: usage.context.window || w.window,
     // No figure yet keeps what we had: the start estimate, or null after a compaction.
     tokens: usage.context.tokens ?? w.tokens,
@@ -157,13 +202,64 @@ async function learn($: EngineInterface, live: readonly Limit[], now: number): P
   return ratesOf(next)
 }
 
-async function applyUsage($: EngineInterface, usage: Usage, persist: boolean) {
+/**
+ * What a reading added goes to the loop whose response it followed: an
+ * agent's, or yours (the main loop, and the engine's own forks).
+ */
+const credit = (w: Weather, loop: string | undefined, usd: number): Weather => {
+  const agent = loop === undefined ? undefined : w.agents[loop]
+  if (!agent || usd <= 0) return w
+  return { ...w, agentSpent: w.agentSpent + usd, agents: { ...w.agents, [loop!]: { ...agent, spent: agent.spent + usd } } }
+}
+
+const nextOrder = (w: Weather) => Math.max(0, ...Object.values(w.agents).map(a => a.order)) + 1
+
+const withAgent = (w: Weather, id: string, patch: Partial<Agent>): Weather => {
+  const agent = w.agents[id]
+  return agent ? { ...w, agents: { ...w.agents, [id]: { ...agent, ...patch } } } : w
+}
+
+/**
+ * Makes sure a loop id is known: an agent the spawn hook missed is filled in
+ * from the agent list; one no list names is an engine fork, counted as yours.
+ */
+async function ensureLoop($: EngineInterface, id: string) {
+  const w = await read($, weather)
+  if (w.agents[id] || w.forks.includes(id)) return
+  const info = (await $.agent.list().catch(() => [])).find(a => a.id === id)
+  const now = await $.clock.now()
+  await update($, weather, cur => {
+    if (cur.agents[id] || cur.forks.includes(id)) return cur
+    if (!info) return { ...cur, forks: [...cur.forks, id].slice(-MAX_FORKS) }
+    const isTeammate = info.teammateId !== undefined
+    const agent: Agent = {
+      type: isTeammate ? (info.name ?? 'teammate') : info.type,
+      description: info.description,
+      model: null,
+      effort: null,
+      status: statusOf(info.status),
+      spent: 0,
+      background: false,
+      teammate: isTeammate,
+      parentId: info.parentId ?? null,
+      workflow: null,
+      compacted: false,
+      startedAt: now,
+      endedAt: null,
+      order: nextOrder(cur),
+    }
+    return { ...cur, agents: { ...cur.agents, [id]: agent } }
+  })
+}
+
+async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, loop?: string) {
   try {
     const now = await $.clock.now()
     let before = 0
     const w = await update($, weather, cur => {
       before = cur.spent
-      return withUsage(cur, usage, now)
+      const next = withUsage(cur, usage, now)
+      return credit(next, loop, next.spent - cur.spent)
     })
     if (persist || w.spent !== before) await saveSpend($, w, now)
     if (persist) {
@@ -173,6 +269,24 @@ async function applyUsage($: EngineInterface, usage: Usage, persist: boolean) {
     }
   } catch {
     // A failed refresh only skips one reading; never disturb the event.
+  }
+}
+
+// A compaction finished: an agent's marks it, yours blanks the fill and notes what it cost.
+async function noteCompaction($: EngineInterface, agentId: string | undefined, isMain: boolean, before: Weather | undefined) {
+  if (agentId !== undefined) {
+    // An agent compacted its own transcript: yours is untouched.
+    await update($, weather, w => withAgent(w, agentId, { compacted: true }))
+  } else if (isMain) {
+    const usage = await $.session.usage().catch(() => undefined)
+    const now = await $.clock.now()
+    await update($, weather, cur => {
+      const w = usage ? withUsage(cur, usage, now) : cur
+      // Its requests run as an unnamed fork, counted as yours: what yours grew by.
+      const cost = before ? Math.max(0, w.spent - w.agentSpent - (before.spent - before.agentSpent)) : 0
+      // The fill is unknown until the next response reports it.
+      return { ...w, tokens: null, isEstimate: false, compacted: true, compactSpent: w.compactSpent + cost }
+    })
   }
 }
 
@@ -246,8 +360,19 @@ export const register: Register = on => {
     return result
   })
 
-  // A main-loop turn begins (a subagent's run raises none).
+  // A turn begins: the main loop's, or an agent's run (a teammate's wake too).
   on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      // An agent's run is its own: your turn's counters stay as they are.
+      try {
+        const id = e.agentId
+        await ensureLoop($, id)
+        await update($, weather, cur => withAgent(cur, id, { status: 'running', endedAt: null }))
+      } catch {
+        // Listed at its first reply instead.
+      }
+      return next(e)
+    }
     try {
       const now = await $.clock.now()
       const usage = await $.session.usage().catch(() => undefined)
@@ -264,9 +389,13 @@ export const register: Register = on => {
           rates: rates ?? w.rates,
           turnStartTokens: w.tokens,
           turnStartSpent: w.spent,
+          turnStartAgentSpent: w.agentSpent,
+          idleAgentSpent: null,
           turnStartLimits: base ? Object.fromEntries(base.map(l => [l.kind, l.percentUsed])) : null,
+          // Finished agents were shown through the turn after: they go now.
+          agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
           // A turn on the new model has begun: its end clears the switch note.
-          switchSeen: w.switchedFrom !== null && e.agentId === undefined ? true : w.switchSeen,
+          switchSeen: w.switchedFrom !== null ? true : w.switchSeen,
         }
       })
     } catch {
@@ -275,12 +404,47 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // An agent starts: its type, task and where it runs, for the agents line.
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      const id = result.agentId
+      if (id !== undefined) {
+        const now = await $.clock.now()
+        await update($, weather, cur => {
+          const prev = cur.agents[id]
+          const isTeammate = e.isTeammate === true
+          const agent: Agent = {
+            type: e.workflow ? 'workflow' : isTeammate ? (result.teammateId?.split('@')[0] ?? e.name ?? 'teammate') : e.subagentType,
+            description: e.description,
+            model: result.model ?? prev?.model ?? null,
+            effort: prev?.effort ?? null,
+            status: 'running',
+            spent: prev?.spent ?? 0,
+            background: e.background === true,
+            teammate: isTeammate,
+            parentId: e.parentAgentId ?? null,
+            workflow: e.workflow?.runId ?? null,
+            compacted: false,
+            startedAt: prev?.startedAt ?? now,
+            endedAt: null,
+            order: prev?.order ?? nextOrder(cur),
+          }
+          return { ...cur, agents: { ...cur.agents, [id]: agent }, forks: cur.forks.filter(f => f !== id) }
+        })
+      }
+    } catch {
+      // Listed from the agent list at its first reply instead.
+    }
+    return result
+  })
+
   // Live: every model response, mid-turn included, refreshes the figures.
   on('turn.step', async function* ($, e, next) {
+    const effort = typeof e.effort === 'string' ? e.effort : typeof e.effort === 'number' ? String(e.effort) : null
     // The main loop's model and effort as sent; a subagent's are its own.
     if (e.agentId === undefined) {
       try {
-        const effort = typeof e.effort === 'string' ? e.effort : null
         await update($, weather, cur => ({ ...withModel(cur, e.model), effort }))
       } catch {
         // The name stays as it was until the next request.
@@ -288,7 +452,15 @@ export const register: Register = on => {
     }
     const result = yield* next(e)
     try {
-      await applyUsage($, await $.session.usage(), false)
+      if (e.agentId !== undefined) {
+        const id = e.agentId
+        await ensureLoop($, id)
+        // The model that answered: a fallback's, where it fell back.
+        const model = result?.usage?.model ?? e.model
+        await update($, weather, cur => withAgent(cur, id, { model, effort }))
+      }
+      // This response's cost goes to the loop that asked for it.
+      await applyUsage($, await $.session.usage(), false, e.agentId)
     } catch {
       // A failed read only skips one refresh; never disturb the turn.
     }
@@ -297,7 +469,24 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined) return result
+    if (e.agentId !== undefined) {
+      // An agent's run ended: finished, failed, stopped, or a teammate gone idle.
+      try {
+        const id = e.agentId
+        await ensureLoop($, id)
+        const usage = await $.session.usage().catch(() => undefined)
+        if (usage) await applyUsage($, usage, false, id)
+        const now = await $.clock.now()
+        await update($, weather, cur => {
+          const agent = cur.agents[id]
+          if (!agent) return cur
+          return withAgent(cur, id, { status: endStatus(e.reason, agent.teammate), endedAt: now, model: e.usage?.model ?? agent.model })
+        })
+      } catch {
+        // It stays as last seen.
+      }
+      return result
+    }
 
     try {
       const usage = await $.session.usage().catch(() => undefined)
@@ -309,20 +498,33 @@ export const register: Register = on => {
       const rates = await learn($, usage ? copyLimits(usage.rateLimits) : [], now).catch(() => undefined)
       await update($, weather, cur => {
         const w = { ...(usage ? withUsage(cur, usage, now) : cur), rates: rates ?? cur.rates }
-        const ended = { ...w, turnStartLimits: null, turnStartTokens: null, turnStartSpent: null }
+        const ended = {
+          ...w,
+          turnStartLimits: null,
+          turnStartTokens: null,
+          turnStartSpent: null,
+          turnStartAgentSpent: null,
+          // What agents spend from here on is background spend.
+          idleAgentSpent: w.agentSpent,
+        }
         if (!counts) return ended
 
         const tokens = usage?.context.tokens
         const last = w.history.at(-1)
         const before = last ?? w.turnStartTokens
         const measured = tokens !== undefined && before !== null
+        const turnSpent = w.turnStartSpent === null ? 0 : w.spent - w.turnStartSpent
+        const turnAgents = w.turnStartAgentSpent === null ? 0 : w.agentSpent - w.turnStartAgentSpent
         return {
           ...ended,
           history: tokens === undefined ? w.history : pushHistory(w.history, tokens),
           lastDelta: measured ? tokens - before : w.lastDelta,
           lastDeltaCompacted: measured ? w.compacted : w.lastDeltaCompacted,
+          lastCompactSpent: measured ? (w.compacted ? w.compactSpent : null) : w.lastCompactSpent,
+          compactSpent: measured ? 0 : w.compactSpent,
           compacted: measured ? false : w.compacted,
           lastLimitDelta: lastDeltas(w),
+          lastAgentShare: turnSpent > 0 ? turnAgents / turnSpent : null,
           // A whole turn ran on the new model: the switch note has been read.
           ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
@@ -359,27 +561,36 @@ export const register: Register = on => {
   })
 
   on('session.compact', async ($, e, next) => {
-    const result = await next(e)
+    // Your own spend before it, so the compaction's cost can be told apart.
     // A precompute only prepares a summary: the conversation is unchanged.
-    if (e.trigger !== 'precompute' && result.skip === undefined) {
-      // The fill is unknown until the next response reports it.
-      await update($, weather, w => ({ ...w, tokens: null, isEstimate: false, compacted: true }))
+    const isMain = e.agentId === undefined && e.trigger !== 'precompute'
+    const before = isMain ? await read($, weather).catch(() => undefined) : undefined
+    const result = await next(e)
+    if (result.skip !== undefined) return result
+    try {
+      await noteCompaction($, e.agentId, isMain, before)
+    } catch {
+      // The reading stays as it was; the compaction itself is done.
     }
     return result
     // Only observes: a failure here must never block or alter the compaction.
   }).catch(($, e, next) => next(e))
 
+
   // /clear and /resume switch conversations with no session.start: drop the old
   // turns, keep the window and the limits with their last-turn change (they
-  // belong to the account). /logout drops the limits too.
+  // belong to the account), and the agents still running. /logout drops the
+  // limits too.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
+      const now = await $.clock.now()
       await update($, weather, w => ({
         ...EMPTY,
         window: w.window,
         limits: w.limits,
         limitsAsOf: w.limitsAsOf,
         lastLimitDelta: w.lastLimitDelta,
+        lastAgentShare: w.lastAgentShare,
         instanceId: w.instanceId,
         usd: w.usd,
         costFrom: w.costFrom,
@@ -390,6 +601,14 @@ export const register: Register = on => {
         effort: w.effort,
         switchedFrom: w.switchedFrom,
         switchSeen: w.switchSeen,
+        // A background agent or a teammate outlives the conversation it began in.
+        agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
+        forks: w.forks,
+        agentSpent: w.agentSpent,
+        idleAgentSpent: w.idleAgentSpent ?? w.agentSpent,
+        windowStart: w.windowStart,
+        // A /clear's new ledger starts at 0: its first reading counts in full.
+        clearedAt: e.reason === 'clear' ? now : null,
       }))
     } else if (e.reason === 'logout') {
       await update($, weather, w => ({ ...w, ...NO_LIMITS }))
@@ -407,6 +626,199 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const working = e.props.isWorking
+    const agents = w.agents ?? {}
+    const agentSpent = w.agentSpent ?? 0
+    const entries = agentEntries(agents)
+    const viewId = e.props.view?.agentId
+    const viewed = viewId === undefined ? undefined : entries.find(x => x.ids.includes(viewId))
+
+    // The running turn's spend, and the agents' part of it.
+    const turnSpent = w.turnStartSpent == null ? 0 : w.spent - w.turnStartSpent
+    const turnAgents = w.turnStartAgentSpent == null ? 0 : agentSpent - w.turnStartAgentSpent
+    const turnAgentShare = turnSpent > 0 ? turnAgents / turnSpent : null
+    const thisDeltaOf = (limit: Limit) =>
+      working
+        ? turnDelta(limit.percentUsed, w.turnStartLimits?.[limit.kind], w.turnStartSpent === null ? null : turnSpent, w.rates[limit.kind])
+        : undefined
+    // A Session share for each agent: its spend at the learned rate, or at
+    // this turn's own rate before one is learned.
+    const session = w.limits.find(l => l.kind === 'five_hour')
+    const sessionThis = session ? thisDeltaOf(session) : undefined
+    const sessionRate =
+      w.rates.five_hour ?? (sessionThis !== undefined && sessionThis > 0 && turnSpent > 0 ? sessionThis / turnSpent : undefined)
+
+    // Lines 2–4: usage limits, /usage-style bars in Claude orange, saved
+    // readings from an earlier session included.
+    const width = Math.max(10, Math.min(30, e.props.bodyColumns - LABEL_WIDTH - 80))
+    const rows = LIMIT_KINDS.flatMap(kind => {
+      const limit = w.limits.find(l => l.kind === kind)
+      if (!limit) return []
+      // This session's own share of the running turn, the account's change until a rate is learned.
+      const thisDelta = thisDeltaOf(limit)
+      // Kept while the next turn runs, so the previous answer's cost stays readable.
+      const lastDelta = w.lastLimitDelta[kind]
+      const thisText =
+        thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this') + (thisDelta > 0 ? fmtSplit(splitDelta(thisDelta, turnAgentShare)) : '')
+      const lastText =
+        lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last') + (lastDelta > 0 ? fmtSplit(splitDelta(lastDelta, w.lastAgentShare ?? null)) : '')
+      // What agents spent since your last turn ended.
+      const background = !working && w.idleAgentSpent != null ? shareOf(agentSpent - w.idleAgentSpent, w.rates[kind]) : null
+      // Counted from the last refresh; the minute timer keeps it current.
+      const at = limit.resetsAt ? fmtReset(limit.resetsAt, kind !== 'five_hour') : ''
+      const reset = at ? `in ${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} (${at})` : ''
+      // Nearly gone: the bar and its figure turn red, as the context line does.
+      const isHot = limit.percentUsed >= HOT_PCT
+      const fill = isHot ? 'red' : 'claude'
+      const colors = PART_COLORS[isHot ? 'hot' : 'cool']
+      // The bar tinted by who used it: this session since the window began at
+      // the learned rate; before one is learned, the turn's change alone.
+      const rate = w.rates[kind]
+      const start = w.windowStart?.[kind]
+      let you = 0
+      let mine = 0
+      if (rate !== undefined && start) {
+        const agentsUsd = agentSpent - start.agentSpent
+        you = Math.max(0, w.spent - start.spent - agentsUsd) * rate
+        mine = Math.max(0, agentsUsd) * rate
+        // A rate learned while some spend went uncounted reads too high: never more than the bar.
+        const over = (you + mine) / Math.max(limit.percentUsed, 0.0001)
+        if (over > 1) {
+          you /= over
+          mine /= over
+        }
+      } else {
+        const delta = working ? thisDelta : lastDelta
+        if (delta !== undefined && delta > 0) {
+          const split = splitDelta(delta, working ? turnAgentShare : (w.lastAgentShare ?? null))
+          you = split.you
+          mine = split.agents
+        }
+      }
+      const parts = tintCells(limit.percentUsed, you, mine, width)
+      return [
+        <Text key={kind} wrap="truncate">
+          <Text color="claude" bold>
+            {LIMIT_LABELS[kind].padEnd(LABEL_WIDTH)}
+          </Text>
+          {parts.map((p: BarPart, i) => (
+            <Text key={`p${i}`} color={p.part === 'empty' ? undefined : colors[p.part]} backgroundColor={TRACK}>
+              {p.text}
+            </Text>
+          ))}
+          <Text color={fill} bold>
+            {' '}
+            {fmtPct(limit.percentUsed)}%
+          </Text>
+          {limit.percentUsed > 100 && (
+            <Text color="red" bold>
+              {` over by ${fmtPct(limit.percentUsed - 100)}%`}
+            </Text>
+          )}
+          {thisText && <Text color="claude">{` ${thisText}`}</Text>}
+          {lastText && <Text color="claude">{` ${lastText}`}</Text>}
+          {background !== null && background > 0 && <Text color={AGENT_COLOR}>{` ⑂ +${fmtPct(background)}% background`}</Text>}
+          <Text dimColor>{reset ? ` · resets ${reset}` : ' · window reset'}</Text>
+        </Text>,
+      ]
+    })
+
+    // The agents: one line, or one row each while you view one of them. With
+    // no room left above the prompt, a chip on line 1 instead.
+    const room = e.props.maxRows - 1 - rows.length
+    const isChip = entries.length > 0 && room <= 0
+    const shareText = (x: AgentEntry) => {
+      // Nothing yet (no reply in, or no rate to tell): no figure.
+      const share = shareOf(x.spent, sessionRate)
+      return share ? ` +${fmtPct(share)}%` : ''
+    }
+    const label = (x: AgentEntry) => {
+      const model = x.model === null ? null : fmtModel(x.model)
+      return `${x.type}${model ? '·' + model : ''}${x.effort ? ' ' + x.effort : ''}`
+    }
+    const timeOf = (x: AgentEntry) =>
+      x.status === 'running'
+        ? fmtLeft(w.now - x.startedAt)
+        : x.status === 'done'
+          ? `done in ${fmtLeft((x.endedAt ?? w.now) - x.startedAt)}`
+          : x.status === 'failed'
+            ? 'failed'
+            : x.status === 'killed'
+              ? 'stopped'
+              : 'waiting'
+    let agentLines: ReturnType<typeof Text>[] = []
+    if (entries.length > 0 && !isChip) {
+      const running = entries.filter(x => x.status === 'running').length
+      if (viewed && room >= 2) {
+        const total = shareOf(entries.reduce((n, x) => n + x.spent, 0), sessionRate)
+        const shown = entries.length > room - 1 ? entries.slice(0, Math.max(0, room - 2)) : entries
+        agentLines = [
+          <Text key="ah" wrap="truncate">
+            <Text color={AGENT_COLOR} bold>
+              ⑂ Agents
+            </Text>
+            <Text dimColor>{`  ${running} running · ${entries.length - running} done`}</Text>
+            {!!total && <Text color={AGENT_COLOR}>{` · +${fmtPct(total)}% of Session`}</Text>}
+          </Text>,
+          ...shown.map((x, i) => {
+            const isViewed = x === viewed
+            const desc = x.description.length > 28 ? x.description.slice(0, 27) + '…' : x.description
+            return (
+              <Text key={`ar${i}`} wrap="truncate" bold={isViewed}>
+                <Text dimColor>{isViewed ? ' ▸ ' : '   '}</Text>
+                <Text color={ICON_COLORS[x.status]} dimColor={ICON_COLORS[x.status] === undefined}>
+                  {AGENT_ICONS[x.status]}{' '}
+                </Text>
+                <Text dimColor={x.status === 'killed'}>{((x.isChild ? '└ ' : '') + x.type).padEnd(17)}</Text>
+                <Text dimColor>{(desc ? `"${desc}"` : '').padEnd(31)}</Text>
+                <Text color={MODEL_COLOR}>{((x.model && fmtModel(x.model)) ?? '').padEnd(11)}</Text>
+                <Text dimColor>{(x.effort ?? '—').padEnd(7)}</Text>
+                <Text color={AGENT_COLOR}>{shareText(x).trim().padStart(6)}</Text>
+                <Text dimColor>{`  ${timeOf(x)}${x.compacted ? '  ⟲ compacted' : ''}`}</Text>
+              </Text>
+            )
+          }),
+          ...(shown.length < entries.length
+            ? [
+                <Text key="am" dimColor>
+                  {`   +${entries.length - shown.length} more`}
+                </Text>,
+              ]
+            : []),
+        ]
+      } else {
+        const isBackground = entries.every(x => x.background && x.status === 'running')
+        const head = `⑂ ${entries.length} agent${entries.length === 1 ? '' : 's'}`
+        const extra = isBackground ? ' in background' : running > 0 && running < entries.length ? ` (${running} running)` : ''
+        const items = entries.map(x => ({ x, name: label(x), share: shareText(x) }))
+        const fits = fitItems(
+          head.length + extra.length,
+          items.map(it => 4 + it.name.length + (it.x.compacted ? 2 : 0) + it.share.length),
+          e.props.bodyColumns,
+        )
+        agentLines = [
+          <Text key="al" wrap="truncate">
+            <Text color={AGENT_COLOR} bold>
+              {head}
+            </Text>
+            <Text color={isBackground ? AGENT_COLOR : undefined} dimColor={!isBackground}>
+              {extra}
+            </Text>
+            {items.slice(0, fits).map(({ x, name, share }, i) => (
+              <Text key={`ai${i}`} bold={x === viewed}>
+                <Text dimColor>{x === viewed ? ' ▸' : '  '}</Text>
+                <Text color={ICON_COLORS[x.status]} dimColor={ICON_COLORS[x.status] === undefined}>
+                  {AGENT_ICONS[x.status]}{' '}
+                </Text>
+                <Text dimColor={x.status === 'killed'}>{name}</Text>
+                {x.compacted && <Text color={AGENT_COLOR}> ⟲</Text>}
+                {share && <Text color={AGENT_COLOR}>{share}</Text>}
+              </Text>
+            ))}
+            {fits < items.length && <Text dimColor>{`  +${items.length - fits} more`}</Text>}
+          </Text>,
+        ]
+      }
+    }
 
     // Line 1 opens with the model, so a narrow terminal's cut never hides it.
     const model = name && (
@@ -415,6 +827,7 @@ export const register: Register = on => {
         {w.effort && <Text>{` ${w.effort}`}</Text>}
       </Text>
     )
+    const chip = isChip && <Text color={AGENT_COLOR}>{`${model ? '  ' : ''}⑂ ${entries.length}`}</Text>
 
     // Line 1: the context window.
     const known = w.tokens !== null
@@ -428,9 +841,15 @@ export const register: Register = on => {
     else if (!known) tail = <Text dimColor>measuring…</Text>
     else if (w.isEstimate) tail = <Text dimColor>waiting for first reply</Text>
     else if (w.lastDelta !== null) {
-      if (w.lastDelta < 0 && w.lastDeltaCompacted)
-        tail = <Text color="green">▼ −{fmtTokens(-w.lastDelta)} compacted</Text>
-      else if (w.lastDelta < 0) tail = <Text dimColor>▼ −{fmtTokens(-w.lastDelta)} last turn</Text>
+      if (w.lastDelta < 0 && w.lastDeltaCompacted) {
+        // What the compaction itself cost, as a share of the Session bar.
+        const cost = w.lastCompactSpent == null ? null : shareOf(w.lastCompactSpent, w.rates.five_hour)
+        tail = (
+          <Text color="green">
+            ▼ −{fmtTokens(-w.lastDelta)} compacted{cost ? ` · +${fmtPct(cost)}%` : ''}
+          </Text>
+        )
+      } else if (w.lastDelta < 0) tail = <Text dimColor>▼ −{fmtTokens(-w.lastDelta)} last turn</Text>
       else
         tail = (
           <Text color={w.lastDelta > w.window * 0.2 ? 'red' : undefined} dimColor={w.lastDelta <= w.window * 0.2}>
@@ -441,11 +860,17 @@ export const register: Register = on => {
 
     const context =
       w.window === 0 ? (
-        model && <Text wrap="truncate">{model}</Text>
+        (model || chip) && (
+          <Text wrap="truncate">
+            {model}
+            {chip}
+          </Text>
+        )
       ) : (
         <Text wrap="truncate">
           {model}
-          {model && <Text dimColor>{'  │  '}</Text>}
+          {chip}
+          {(model || chip) && <Text dimColor>{'  │  '}</Text>}
           <Text color={level.color} bold>
             {level.icon} {level.word}
           </Text>
@@ -469,52 +894,10 @@ export const register: Register = on => {
         </Text>
       )
 
-    // Lines 2–3: usage limits, /usage-style bars in Claude orange, saved
-    // readings from an earlier session included.
-    const width = Math.max(10, Math.min(30, e.props.bodyColumns - LABEL_WIDTH - 80))
-    const rows = (['five_hour', 'seven_day'] as const).flatMap(kind => {
-      const limit = w.limits.find(l => l.kind === kind)
-      if (!limit) return []
-      // This session's own share of the running turn, the account's change until a rate is learned.
-      const thisDelta = working
-        ? turnDelta(
-            limit.percentUsed,
-            w.turnStartLimits?.[kind],
-            w.turnStartSpent === null ? null : w.spent - w.turnStartSpent,
-            w.rates[kind],
-          )
-        : undefined
-      // Kept while the next turn runs, so the previous answer's cost stays readable.
-      const lastDelta = w.lastLimitDelta[kind]
-      const thisText = thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this')
-      const lastText = lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last')
-      // Counted from the last refresh; the minute timer keeps it current.
-      const at = limit.resetsAt ? fmtReset(limit.resetsAt, kind === 'seven_day') : ''
-      const reset = at ? `in ${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} (${at})` : ''
-      // Nearly gone: the bar and its figure turn red, as the context line does.
-      const fill = limit.percentUsed >= HOT_PCT ? 'red' : 'claude'
-      return [
-        <Text key={kind} wrap="truncate">
-          <Text color="claude" bold>
-            {LIMIT_LABELS[kind].padEnd(LABEL_WIDTH)}
-          </Text>
-          <Text color={fill} backgroundColor={TRACK}>
-            {usageCells(limit.percentUsed, width)}
-          </Text>
-          <Text color={fill} bold>
-            {' '}
-            {fmtPct(limit.percentUsed)}%
-          </Text>
-          {thisText && <Text color="claude">{` ${thisText}`}</Text>}
-          {lastText && <Text color="claude">{` ${lastText}`}</Text>}
-          <Text dimColor>{reset ? ` · resets ${reset}` : ' · window reset'}</Text>
-        </Text>,
-      ]
-    })
-
     return (
       <Box flexDirection="column">
         {context}
+        {agentLines}
         {rows}
       </Box>
     )

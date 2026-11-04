@@ -3,6 +3,10 @@ import type { Engine, TestBody } from 'claude-code/testing'
 
 import {
   addSpend,
+  agentEntries,
+  fitItems,
+  splitDelta,
+  tintCells,
   fmtLeft,
   fmtLimitDelta,
   fmtModel,
@@ -261,7 +265,9 @@ describe('band', () => {
 
     // A 100-column terminal shrinks the bar to 11 cells so both deltas and the reset still fit.
     const narrow = await $.ui.mount({ ...band, props: { ...props(false), bodyColumns: 100 } })
-    expect(await narrow.find({ type: 'Text', text: /^▌ {10}$/ })).toBeDefined()
+    // Tinted by who used it: before a rate is learned, the last turn's change is this session's own.
+    expect((await narrow.find({ type: 'Text', text: /^▌$/ }))?.props.color).toBe('claude')
+    expect(await narrow.find({ type: 'Text', text: /^ {10}$/ })).toBeDefined()
 
     // The next answer starts: the previous one's cost stays on screen.
     await $.turn.start({ text: 'next', turnId: 't2' })
@@ -662,14 +668,15 @@ describe('edge cases', () => {
     expect(await working.find({ type: 'Text', text: /^ \+2% this turn$/ })).toBeDefined()
   })
 
-  test('saved limits show in full orange, with no age note', async ($, on) => {
+  test('saved limits show as other usage, with no age note', async ($, on) => {
     mock.clock(on, { now: NOW })
     mock.store(on, { lastLimits: { at: NOW - 5 * 60_000, limits: [limit('five_hour', 4)] } })
     harness(on, { estimate: 10000 })
     await start($)
     const ui = await $.ui.mount({ ...band, props: props(false) })
-    const bar = await ui.find({ type: 'Text', text: /^█▏ +$/ })
-    expect(bar?.props.color).toBe('claude')
+    // Nothing of it is this session's: the dim orange of other usage.
+    const bar = await ui.find({ type: 'Text', text: /^█▏$/ })
+    expect(bar?.props.color).toBe('#8f4f3a')
     expect(bar?.props.dimColor).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^Session/ }))?.props.dimColor).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /as of/ })).toBeUndefined()
@@ -805,5 +812,192 @@ describe('edge cases', () => {
       await $.session.end({ reason: 'clear', sessionId: 's', resume: {} } as never)
       expect(await (await mounted($)).find({ type: 'Text', text: /^◆ Opus 5\.5$/ })).toBeDefined()
     })
+  })
+
+  describe('agents', () => {
+    const RATE = { 'rates.v2': { five_hour: { rate: 2, pct: 10, resetsAt: RESET, snap: {} } } }
+    const setup = (on: Parameters<TestBody>[1], entries: Record<string, unknown> = RATE, tokens = 40000) => {
+      mock.clock(on, { now: NOW })
+      sharedStore(on, entries)
+      const s = harness(on, { tokens, limits: [limit('five_hour', 10)] })
+      s.usage = { ...s.usage, cost: { usd: 0 } } as typeof s.usage
+      on('agent.list', () => ({ value: [] }) as never)
+      on('agent.spawn', ($, e) => ({ model: 'claude-haiku-5-5', agentId: e.description === 'scan' ? 'a1' : 'a2' }) as never)
+      return s
+    }
+    type S = ReturnType<typeof setup>
+    const read = (s: S, usd: number, extra: Record<string, unknown> = {}) =>
+      (s.usage = { ...s.usage, cost: { usd }, ...extra } as typeof s.usage)
+    const agentStep = async ($: Engine, agentId: string) => {
+      for await (const _ of $.turn.step({ turnId: 'x' + agentId, index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId } as never)) void _
+    }
+    const agentDone = ($: Engine, agentId: string, reason = 'answer') =>
+      $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'x' + agentId, reason, agentId } as never)
+    const spawn = ($: Engine, description: string) => $.agent.spawn({ prompt: 'go', description, subagentType: 'Explore' } as never)
+    const mount = ($: Engine, isWorking: boolean, extra: Record<string, unknown> = {}) =>
+      $.ui.mount({ ...band, props: { ...props(isWorking), ...extra } })
+
+    test("an agent's start mid-turn leaves your turn's count alone", async ($, on) => {
+      const s = setup(on, {})
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      s.usage = { ...s.usage, rateLimits: [limit('five_hour', 12)] }
+      await step($, 't1')
+      await spawn($, 'scan')
+      await $.turn.start({ text: 'go', turnId: 'xa1', agentId: 'a1' })
+      s.usage = { ...s.usage, rateLimits: [limit('five_hour', 14)] }
+      await agentStep($, 'a1')
+      expect(await (await mount($, true)).find({ type: 'Text', text: /^ \+4% this turn$/ })).toBeDefined()
+    })
+
+    test('each answer costs the loop that asked: the turn splits, the agent is listed with its model', async ($, on) => {
+      const s = setup(on)
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      read(s, 0.5, { rateLimits: [limit('five_hour', 11)] })
+      await step($, 't1')
+      await spawn($, 'scan')
+      read(s, 0.75, { rateLimits: [limit('five_hour', 12)] })
+      await agentStep($, 'a1')
+
+      const ui = await mount($, true)
+      expect(await ui.find({ type: 'Text', text: /^ \+1\.5% this turn \(you 1 · ⑂ 0\.5\)$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^⑂ 1 agent$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^Explore·Haiku 5\.5$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^ \+0\.5%$/ })).toBeDefined()
+      // The bar: other usage, yours, then the agents' part in its own color.
+      expect((await ui.find({ type: 'Text', text: /^█▌$/ }))?.props.color).toBe('#5fb8b4')
+
+      // Your turn ends; the agent keeps spending in the background.
+      await complete($, 't1')
+      read(s, 1)
+      await agentStep($, 'a1')
+      let idle = await mount($, false)
+      expect(await idle.find({ type: 'Text', text: /^ ▲ \+1\.5% last turn \(you 1 · ⑂ 0\.5\)$/ })).toBeDefined()
+      expect(await idle.find({ type: 'Text', text: /^ ⑂ \+0\.5% background$/ })).toBeDefined()
+
+      // Finished: marked done, and gone once your next turn starts.
+      await agentDone($, 'a1')
+      idle = await mount($, false)
+      expect(await idle.find({ type: 'Text', text: /^✓ $/ })).toBeDefined()
+      await $.turn.start({ text: 'next', turnId: 't2' })
+      expect(await (await mount($, true)).find({ type: 'Text', text: /^⑂ \d+ agent/ })).toBeUndefined()
+    })
+
+    test("viewing an agent lists one row each; with no room, a chip on line 1", async ($, on) => {
+      setup(on)
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await spawn($, 'scan')
+      await spawn($, 'tests')
+      const rows = await mount($, true, { view: { agentId: 'a1' } })
+      expect(await rows.find({ type: 'Text', text: /^⑂ Agents$/ })).toBeDefined()
+      expect(await rows.find({ type: 'Text', text: /^ ▸ $/ })).toBeDefined()
+      expect(await rows.find({ type: 'Text', text: /"scan"/ })).toBeDefined()
+
+      const tight = await mount($, true, { maxRows: 2 })
+      expect(await tight.find({ type: 'Text', text: /^ *⑂ 2$/ })).toBeDefined()
+      expect(await tight.find({ type: 'Text', text: /^⑂ 2 agents/ })).toBeUndefined()
+    })
+
+    test('a loop no agent list names (a compaction fork) counts as yours', async ($, on) => {
+      const s = setup(on)
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      read(s, 0.5, { rateLimits: [limit('five_hour', 12)] })
+      await agentStep($, 'fork1')
+      const ui = await mount($, true)
+      expect(await ui.find({ type: 'Text', text: /^ \+1% this turn$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /agent/ })).toBeUndefined()
+    })
+
+    test("an agent's compaction leaves your reading; yours shows what it cost", async ($, on) => {
+      const s = setup(on, RATE, 150000)
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await spawn($, 'scan')
+      await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never)
+      let ui = await mount($, true)
+      expect(await ui.find({ type: 'Text', text: /measuring…/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /^ ⟲$/ })).toBeDefined()
+
+      // Your own compaction: its cost is what your spend grew by while it ran.
+      read(s, 0.2)
+      await compact($, 'auto')
+      s.usage = { ...s.usage, context: { window: 200000, tokens: 30000 } }
+      await complete($, 't1')
+      ui = await mount($, false)
+      expect(await ui.find({ type: 'Text', text: /^▼ −120k compacted · \+0\.4%$/ })).toBeDefined()
+    })
+
+    test('/clear keeps a running agent, drops a finished one, and counts the new ledger from 0', async ($, on) => {
+      const s = setup(on)
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      await spawn($, 'scan')
+      await spawn($, 'tests')
+      await agentDone($, 'a2')
+      await complete($, 't1')
+      await $.session.end({ reason: 'clear', sessionId: 's', resume: {} } as never)
+
+      // The new conversation's ledger: its first reading is the agent's reply.
+      s.usage = { ...s.usage, startedAt: NOW + 1000, cost: { usd: 0.25 } } as typeof s.usage
+      await agentStep($, 'a1')
+      const ui = await mount($, false)
+      expect(await ui.find({ type: 'Text', text: /^⑂ 1 agent$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^ ⑂ \+0\.5% background$/ })).toBeDefined()
+    })
+
+    test('a gateway spend limit draws its own row, and says when it is over', async ($, on) => {
+      mock.clock(on, { now: NOW })
+      mock.store(on)
+      harness(on, { tokens: 40000, limits: [limit('spend_limit', 104)] })
+      await start($)
+      const ui = await mount($, false)
+      expect(await ui.find({ type: 'Text', text: /^Spend/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^ over by 4%$/ })).toBeDefined()
+    })
+  })
+})
+
+describe('agent helpers', () => {
+  test('a tinted bar never stretches the fill, and a small share still shows', () => {
+    expect(tintCells(12, 1, 0.5, 30).map(p => [p.part, p.text.length])).toEqual([['other', 1], ['you', 1], ['agents', 2], ['empty', 26]])
+    expect(tintCells(4, 0, 0, 30)[0]).toEqual({ part: 'other', text: '█▏' })
+    // Under one eighth: nothing to draw, whoever spent it.
+    expect(tintCells(0.3, 0.3, 0, 10)).toEqual([{ part: 'empty', text: ' '.repeat(10) }])
+    expect(tintCells(150, 0, 0, 10)).toEqual([{ part: 'other', text: '█'.repeat(10) }])
+  })
+
+  test('a change splits by spend; a reset or no agent spend stays whole', () => {
+    expect(splitDelta(1.5, 1 / 3)).toEqual({ you: 1, agents: 0.5 })
+    expect(splitDelta(-3, 0.5)).toEqual({ you: -3, agents: 0 })
+    expect(splitDelta(2, null)).toEqual({ you: 2, agents: 0 })
+  })
+
+  test('agents list in spawn order, a child under its parent, a workflow run as one', () => {
+    const a = (order: number, more: Record<string, unknown> = {}) => ({
+      type: 'Explore', description: '', model: null, effort: null, status: 'running' as const, spent: 1, background: false,
+      compacted: false, startedAt: 0, endedAt: null, order, workflow: null, parentId: null, ...more,
+    })
+    const entries = agentEntries({
+      p: a(1, { type: 'Plan' }),
+      w1: a(2, { workflow: 'wf', status: 'done' }),
+      w2: a(3, { workflow: 'wf' }),
+      c: a(4, { parentId: 'p' }),
+    })
+    expect(entries.map(x => [x.type, x.isChild, x.status, x.spent])).toEqual([
+      ['Plan', false, 'running', 1], ['Explore', true, 'running', 1], ['workflow ×2', false, 'running', 2],
+    ])
+  })
+
+  test('the agents line keeps room for "+N more"', () => {
+    expect(fitItems(10, [10, 10, 10], 35)).toBe(1)
+    expect(fitItems(10, [10, 10], 30)).toBe(2)
+  })
+
+  test("a /clear's new ledger counts in full; a resumed one is a baseline", () => {
+    expect(addSpend({ usd: 5.5, spent: 1.5, costFrom: NOW }, 0.25, NOW + 1000, NOW).spent).toBe(1.75)
+    expect(addSpend({ usd: 5.5, spent: 1.5, costFrom: NOW }, 9, NOW - 86_400_000, null).spent).toBe(1.5)
   })
 })

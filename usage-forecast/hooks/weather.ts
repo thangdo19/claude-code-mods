@@ -54,7 +54,7 @@ export const usageCells = (pct: number, width: number): string => {
   return ('█'.repeat(full) + part).padEnd(width, ' ')
 }
 
-export const LIMIT_LABELS = { five_hour: 'Session', seven_day: 'Week' } as const
+export const LIMIT_LABELS = { five_hour: 'Session', seven_day: 'Week', spend_limit: 'Spend' } as const
 
 /** A limit used this much draws red. */
 export const HOT_PCT = 90
@@ -134,16 +134,24 @@ export const fmtLimitDelta = (delta: number, span: 'this' | 'last'): string => {
 
 type Ledger = { usd: number | null; spent: number; costFrom: number | null }
 
+const CLEAR_SLACK_MS = 60_000
+
 /**
  * This session's running spend after a new cost reading: `usd` is the
  * session's own total, counted from `startedAt`. A new ledger (a /clear, a
  * resume) or the first reading counts from there; a total lower than one
  * already counted is a stale reading and adds nothing, so `spent` only grows.
  */
-export const addSpend = (prev: Ledger, usd: number, startedAt?: number): Ledger => {
+export const addSpend = (prev: Ledger, usd: number, startedAt?: number, clearedAt?: number | null): Ledger => {
   const costFrom = startedAt ?? prev.costFrom
-  if (prev.usd === null || (startedAt !== undefined && prev.costFrom !== null && startedAt !== prev.costFrom))
-    return { usd, spent: prev.spent, costFrom }
+  const isNewLedger = startedAt !== undefined && prev.costFrom !== null && startedAt !== prev.costFrom
+  if (prev.usd === null || isNewLedger) {
+    // A /clear's ledger starts at 0 then: what it holds at its first reading
+    // (a background agent's reply, say) was spent here. A resumed session's
+    // starts earlier and holds spend from before: a baseline only.
+    const isFromClear = isNewLedger && clearedAt != null && startedAt >= clearedAt - CLEAR_SLACK_MS
+    return { usd, spent: prev.spent + (isFromClear ? usd : 0), costFrom }
+  }
   if (usd <= prev.usd) return { usd: prev.usd, spent: prev.spent, costFrom }
   return { usd, spent: prev.spent + usd - prev.usd, costFrom }
 }
@@ -162,7 +170,7 @@ const MIN_USD = 1
 const MIN_PCT = 2
 const SAME_RESET_MS = 30 * 60_000
 
-const sameWindow = (a: string | undefined, b: string | undefined) =>
+export const sameWindow = (a: string | undefined, b: string | undefined) =>
   a === b || (a !== undefined && b !== undefined && Math.abs(Date.parse(a) - Date.parse(b)) <= SAME_RESET_MS)
 
 /**
@@ -219,3 +227,140 @@ export const limitDeltas = (
       .filter(limit => start[limit.kind] !== undefined)
       .map(limit => [limit.kind, Math.round((limit.percentUsed - (start[limit.kind] ?? 0)) * 10) / 10]),
   )
+
+export const LIMIT_KINDS = ['five_hour', 'seven_day', 'spend_limit'] as const
+
+/** One stretch of a tinted bar: other usage, this session's own, or its agents'. */
+export type BarPart = { text: string; part: 'other' | 'you' | 'agents' | 'empty' }
+
+/**
+ * A /usage-style bar exactly `width` cells wide, split into the account's
+ * other usage, then this session's own, then its agents', in eighths of a
+ * cell. A share too small for one cell still gets one (as far as the fill
+ * reaches), so it never vanishes; the fill itself is never stretched.
+ */
+export const tintCells = (pct: number, you: number, agents: number, width: number): BarPart[] => {
+  const total = Math.floor((Math.max(0, Math.min(100, pct)) / 100) * width * 8)
+  const eighths = (share: number) => (share > 0 ? Math.max(8, Math.round((Math.min(100, share) / 100) * width * 8)) : 0)
+  // Never past the fill: the agents' part first, then yours.
+  const a = Math.min(eighths(agents), total)
+  const y = Math.min(eighths(you), total - a)
+  const youFrom = total - a - y
+  const agentsFrom = total - a
+  const parts: BarPart[] = []
+  for (let cell = 0; cell < width; cell++) {
+    const filled = Math.max(0, Math.min(8, total - cell * 8))
+    // A cell takes the color of the part at the middle of its fill.
+    const mid = cell * 8 + filled / 2
+    const part: BarPart['part'] = filled === 0 ? 'empty' : mid < youFrom ? 'other' : mid < agentsFrom ? 'you' : 'agents'
+    const ch = filled === 0 ? ' ' : filled === 8 ? '█' : EIGHTHS[filled]!
+    const last = parts.at(-1)
+    if (last && last.part === part) last.text += ch
+    else parts.push({ text: ch, part })
+  }
+  return parts
+}
+
+/**
+ * A turn's change split between this session's main loop and its agents, by
+ * how its spend divided; the agents' part at one decimal, the rest yours.
+ */
+export const splitDelta = (delta: number, agentShare: number | null): { you: number; agents: number } => {
+  if (delta <= 0 || agentShare === null || agentShare <= 0) return { you: delta, agents: 0 }
+  const agents = Math.round(Math.min(1, agentShare) * delta * 10) / 10
+  return { you: Math.round((delta - agents) * 10) / 10, agents }
+}
+
+/** A limit's change with the agents' part named: "+1.2% this turn (you 0.8 · ⑂ 0.4)". */
+export const fmtSplit = (split: { you: number; agents: number }): string =>
+  split.agents > 0 ? ` (you ${fmtPct(split.you)} · ⑂ ${fmtPct(split.agents)})` : ''
+
+/** $ as a share of a window, one decimal, at least 0.1 once anything was spent; null with no rate. */
+export const shareOf = (usd: number, rate: number | undefined): number | null => {
+  if (rate === undefined) return null
+  if (usd <= 0) return 0
+  return Math.max(0.1, Math.round(usd * rate * 10) / 10)
+}
+
+/** An agent loop's state as `$.agent.list()` gives it, in the band's words. */
+export const statusOf = (s: string): 'running' | 'done' | 'failed' | 'killed' | 'idle' =>
+  s === 'completed' ? 'done' : s === 'failed' ? 'failed' : s === 'killed' ? 'killed' : s === 'idle' ? 'idle' : 'running'
+
+/** How an agent's run ended: a teammate waits for its next message instead of finishing. */
+export const endStatus = (reason: string, isTeammate: boolean): 'done' | 'failed' | 'killed' | 'idle' =>
+  reason === 'aborted' ? 'killed' : reason === 'answer' ? (isTeammate ? 'idle' : 'done') : 'failed'
+
+export const AGENT_ICONS = { running: '●', done: '✓', failed: '✗', killed: '✗', idle: '⏸' } as const
+
+/** One entry of the agents line: a workflow run's agents fold into one. */
+export type AgentEntry = {
+  ids: string[]
+  type: string
+  description: string
+  model: string | null
+  effort: string | null
+  status: keyof typeof AGENT_ICONS
+  spent: number
+  background: boolean
+  compacted: boolean
+  isChild: boolean
+  startedAt: number
+  endedAt: number | null
+}
+
+type AgentLike = Omit<AgentEntry, 'ids' | 'isChild'> & { order: number; workflow: string | null; parentId: string | null }
+
+const RANK = { running: 0, idle: 1, failed: 2, killed: 3, done: 4 } as const
+
+/** Agents in spawn order, each child right under its parent, a workflow run as one entry. */
+export const agentEntries = (agents: Readonly<Record<string, AgentLike>>): AgentEntry[] => {
+  const sorted = Object.entries(agents).sort(([, a], [, b]) => a.order - b.order)
+  const entries: AgentEntry[] = []
+  const byRun = new Map<string, AgentEntry>()
+  for (const [id, a] of sorted) {
+    const run = a.workflow === null ? undefined : byRun.get(a.workflow)
+    if (run) {
+      run.ids.push(id)
+      run.spent += a.spent
+      run.type = `workflow ×${run.ids.length}`
+      if (RANK[a.status] < RANK[run.status]) run.status = a.status
+      run.compacted ||= a.compacted
+      run.endedAt = run.status === 'running' ? null : Math.max(run.endedAt ?? 0, a.endedAt ?? 0)
+      continue
+    }
+    const entry: AgentEntry = {
+      ids: [id], type: a.type, description: a.description, model: a.model, effort: a.effort, status: a.status,
+      spent: a.spent, background: a.background, compacted: a.compacted,
+      isChild: a.parentId !== null && agents[a.parentId] !== undefined, startedAt: a.startedAt, endedAt: a.endedAt,
+    }
+    if (a.workflow !== null) byRun.set(a.workflow, entry)
+    entries.push(entry)
+  }
+  // A child sits under its parent.
+  const out: AgentEntry[] = []
+  const placed = new Set<AgentEntry>()
+  const place = (e: AgentEntry) => {
+    if (placed.has(e)) return
+    placed.add(e)
+    out.push(e)
+    for (const c of entries) if (c.isChild && e.ids.includes(agents[c.ids[0]!]!.parentId!)) place(c)
+  }
+  for (const e of entries) if (!e.isChild) place(e)
+  for (const e of entries) place(e)
+  return out
+}
+
+/**
+ * How many items fit on a line `cols` wide after `head`, leaving room for
+ * the "+N more" that names the rest.
+ */
+export const fitItems = (head: number, items: readonly number[], cols: number): number => {
+  let used = head
+  for (let i = 0; i < items.length; i++) {
+    const rest = items.length - i - 1
+    const more = rest > 0 ? `  +${rest} more`.length : 0
+    if (used + items[i]! + more > cols) return i
+    used += items[i]!
+  }
+  return items.length
+}

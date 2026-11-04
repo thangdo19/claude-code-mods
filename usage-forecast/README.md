@@ -14,7 +14,8 @@ A live "weather report" above the prompt: how full Claude's memory is, and how m
 | `☀ Clear` | The weather for how full it is (see below). |
 | `8%`  `81.8k / 1M` | Tokens used out of the total. A token is a small piece of text, about ¾ of a word. |
 | `▁▁▂▂▃▆······` | A chart of the last 12 turns. Dots are turns not taken yet. |
-| `▲ +1.8k last turn` | What your last turn added. `▼ −N compacted` means a compaction shrank it. |
+| `▲ +1.8k last turn` | What your last turn added. `▼ −N compacted · +0.4%` means a compaction shrank it; the % is what the compaction itself cost of your Session limit. |
+| `⑂ 2` | Only when there's no room for the agents line: how many agents you have. |
 
 | Weather | Full |
 |---|---|
@@ -24,14 +25,28 @@ A live "weather report" above the prompt: how full Claude's memory is, and how m
 | ☇ Storm | under 90% |
 | ↯ Compact soon | 90% and up |
 
-**Lines 2–3: your usage limits** (the same bars as `/usage`)
+**Line 2: your agents** (only while there are any)
 
 | Part | Meaning |
 |---|---|
-| `Session` / `Week` | Your 5-hour limit and your weekly limit. |
-| `95%` | How much of that limit you've used. The bar turns red at 90% and up. |
+| `⑂ 2 agents (1 running)` | Subagents, teammates and workflow agents of this session. `in background` when all of them run in the background. |
+| `● Explore·Haiku 5.5 low +0.3%` | One agent: its state, type, the model it actually ran on, its effort, and what it used of your Session (5-hour) limit. |
+| `+3 more` | The agents that didn't fit. |
+
+States: `●` running, `✓` done, `✗` failed (red) or stopped (grey), `⏸` a teammate waiting for a message, `⟲` it compacted its own chat. A workflow's agents show as one `workflow ×N`. Finished agents stay until your next turn starts.
+
+While you view an agent's transcript (← for agents), the line becomes one row per agent, with `▸` on the one you're viewing.
+
+**Then your usage limits** (the same bars as `/usage`)
+
+| Part | Meaning |
+|---|---|
+| `Session` / `Week` / `Spend` | Your 5-hour limit, your weekly limit, and a company gateway's spend limit if you have one. |
+| The bar's colors | Dim orange: everyone else's usage (other sessions, claude.ai). Orange: this session's own. Teal: this session's agents. |
+| `95%` | How much of that limit you've used. The bar turns red at 90% and up. `over by 4%` past 100%. |
 | `▲ +0.2% last turn` | What your last turn used. |
-| `+0.1% this turn` | What the running turn has used so far (only while Claude works). |
+| `+1.2% this turn (you 0.8 · ⑂ 0.4)` | What the running turn has used so far, and how it splits between you and your agents (only while Claude works). |
+| `⑂ +0.7% background` | What your agents used since your last turn ended. |
 | `resets in 37m (6:30pm)` | Time left until the limit resets, then the clock time. |
 
 ## Install
@@ -62,7 +77,8 @@ npx -p typescript tsc -p .   # type check
 
 ## Details
 
-- **Updates:** after every reply from Claude, even mid-turn. The countdown ticks once a minute while idle. The chart and "last turn" figures move once per finished turn of yours. Helper agents (subagents) and turns cancelled before any reply don't count.
+- **Updates:** after every reply from Claude, even mid-turn. The countdown ticks once a minute while idle. The chart and "last turn" figures move once per finished turn of yours. Turns cancelled before any reply don't count.
+- **Agents' share:** each reply's cost goes to the agent (or you) that asked for it. Two replies landing at the same moment can swap owners; the totals stay exact. Claude Code's own background work (compaction, memory) counts as yours.
 - **Several sessions at once:** the % figures show *this session's* share, not the whole account's. The mod learns how many % each $1 of usage costs, then multiplies by what this session spent. Until it has learned that (each limit needs $1 spent and 2 points moved), it shows the account's change instead.
 - **Messages you may see:**
   - `waiting for first reply`: a new session, before Claude has answered.
@@ -71,4 +87,5 @@ npx -p typescript tsc -p .   # type check
   - `window reset`: the limit's reset time has passed, until a new reading arrives.
   - `↻ switched from Opus 5.5`: the model changed (`/model`, or an automatic fallback). Stays until one whole turn has run on the new model. Helper agents' models never count.
 - **New session:** the bars show the last readings saved by an earlier session until Claude replies.
+- **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go. The bar colors keep counting for this terminal.
 - **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings.
