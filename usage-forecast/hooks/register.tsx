@@ -1,20 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
-import type { Agent, Limit, Weather, WindowStart } from '../types'
+import type { Agent, Limit, Weather } from '../types'
 import {
   addSpend,
   AGENT_ICONS,
   agentEntries,
   endStatus,
   fitItems,
-  fmtSplit,
   LIMIT_KINDS,
-  sameWindow,
   shareOf,
-  splitDelta,
   statusOf,
-  tintCells,
+  usageCells,
   fmtLeft,
   fmtLimitDelta,
   fmtModel,
@@ -34,7 +31,7 @@ import {
   turnDelta,
   HISTORY,
 } from './weather'
-import type { AgentEntry, Anchor, BarPart, Spend } from './weather'
+import type { AgentEntry, Anchor, Spend } from './weather'
 
 const EMPTY: Weather = {
   tokens: null,
@@ -63,12 +60,8 @@ const EMPTY: Weather = {
   agents: {},
   forks: [],
   agentSpent: 0,
-  turnStartAgentSpent: null,
-  lastAgentShare: null,
-  idleAgentSpent: null,
   compactSpent: 0,
   lastCompactSpent: null,
-  windowStart: {},
   clearedAt: null,
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
@@ -96,11 +89,6 @@ const TRACK = '#4a2e25'
 const LABEL_WIDTH = 9
 const MODEL_COLOR = 'permission'
 const AGENT_COLOR = '#5fb8b4'
-// The tinted bar: the account's other usage, then this session's own, then its agents'.
-const PART_COLORS = {
-  cool: { other: '#8f4f3a', you: 'claude', agents: AGENT_COLOR },
-  hot: { other: '#a33b4b', you: 'red', agents: AGENT_COLOR },
-} as const
 const ICON_COLORS = { running: AGENT_COLOR, done: 'green', failed: 'red', killed: undefined, idle: undefined } as const
 // Engine forks seen (compaction, memory), kept so each is looked up once.
 const MAX_FORKS = 32
@@ -115,18 +103,6 @@ const withInstance = (w: Weather): Weather => (w.instanceId ? w : { ...w, instan
 const copyLimits = (limits: readonly SessionRateLimit[]): Limit[] =>
   limits.map(({ kind, percentUsed, resetsAt }) => (resetsAt === undefined ? { kind, percentUsed } : { kind, percentUsed, resetsAt }))
 
-// Each live window, with this session's spend when it was first seen in it.
-const windowsOf = (w: Weather, live: readonly Limit[]): Record<string, WindowStart> => {
-  const next = { ...w.windowStart }
-  for (const limit of live) {
-    const start = next[limit.kind]
-    if (start && sameWindow(start.resetsAt, limit.resetsAt)) continue
-    const base = { spent: w.spent, agentSpent: w.agentSpent }
-    next[limit.kind] = limit.resetsAt === undefined ? base : { ...base, resetsAt: limit.resetsAt }
-  }
-  return next
-}
-
 const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
   // The last response's reading stays put after its window resets: fresh again.
   const live = reviveLimits(copyLimits(usage.rateLimits), now)
@@ -136,7 +112,6 @@ const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
     ...ledger,
     // A /clear's mark is spent once its ledger's first reading is in.
     clearedAt: ledger && ledger.costFrom !== w.costFrom ? null : w.clearedAt,
-    windowStart: windowsOf(w, live),
     window: usage.context.window || w.window,
     // No figure yet keeps what we had: the start estimate, or null after a compaction.
     tokens: usage.context.tokens ?? w.tokens,
@@ -389,8 +364,6 @@ export const register: Register = on => {
           rates: rates ?? w.rates,
           turnStartTokens: w.tokens,
           turnStartSpent: w.spent,
-          turnStartAgentSpent: w.agentSpent,
-          idleAgentSpent: null,
           turnStartLimits: base ? Object.fromEntries(base.map(l => [l.kind, l.percentUsed])) : null,
           // Finished agents were shown through the turn after: they go now.
           agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
@@ -503,9 +476,6 @@ export const register: Register = on => {
           turnStartLimits: null,
           turnStartTokens: null,
           turnStartSpent: null,
-          turnStartAgentSpent: null,
-          // What agents spend from here on is background spend.
-          idleAgentSpent: w.agentSpent,
         }
         if (!counts) return ended
 
@@ -513,8 +483,6 @@ export const register: Register = on => {
         const last = w.history.at(-1)
         const before = last ?? w.turnStartTokens
         const measured = tokens !== undefined && before !== null
-        const turnSpent = w.turnStartSpent === null ? 0 : w.spent - w.turnStartSpent
-        const turnAgents = w.turnStartAgentSpent === null ? 0 : w.agentSpent - w.turnStartAgentSpent
         return {
           ...ended,
           history: tokens === undefined ? w.history : pushHistory(w.history, tokens),
@@ -524,7 +492,6 @@ export const register: Register = on => {
           compactSpent: measured ? 0 : w.compactSpent,
           compacted: measured ? false : w.compacted,
           lastLimitDelta: lastDeltas(w),
-          lastAgentShare: turnSpent > 0 ? turnAgents / turnSpent : null,
           // A whole turn ran on the new model: the switch note has been read.
           ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
@@ -590,7 +557,6 @@ export const register: Register = on => {
         limits: w.limits,
         limitsAsOf: w.limitsAsOf,
         lastLimitDelta: w.lastLimitDelta,
-        lastAgentShare: w.lastAgentShare,
         instanceId: w.instanceId,
         usd: w.usd,
         costFrom: w.costFrom,
@@ -605,8 +571,6 @@ export const register: Register = on => {
         agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
         forks: w.forks,
         agentSpent: w.agentSpent,
-        idleAgentSpent: w.idleAgentSpent ?? w.agentSpent,
-        windowStart: w.windowStart,
         // A /clear's new ledger starts at 0: its first reading counts in full.
         clearedAt: e.reason === 'clear' ? now : null,
       }))
@@ -627,15 +591,12 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const working = e.props.isWorking
     const agents = w.agents ?? {}
-    const agentSpent = w.agentSpent ?? 0
     const entries = agentEntries(agents)
     const viewId = e.props.view?.agentId
     const viewed = viewId === undefined ? undefined : entries.find(x => x.ids.includes(viewId))
 
-    // The running turn's spend, and the agents' part of it.
+    // The running turn's spend.
     const turnSpent = w.turnStartSpent == null ? 0 : w.spent - w.turnStartSpent
-    const turnAgents = w.turnStartAgentSpent == null ? 0 : agentSpent - w.turnStartAgentSpent
-    const turnAgentShare = turnSpent > 0 ? turnAgents / turnSpent : null
     const thisDeltaOf = (limit: Limit) =>
       working
         ? turnDelta(limit.percentUsed, w.turnStartLimits?.[limit.kind], w.turnStartSpent === null ? null : turnSpent, w.rates[limit.kind])
@@ -657,54 +618,21 @@ export const register: Register = on => {
       const thisDelta = thisDeltaOf(limit)
       // Kept while the next turn runs, so the previous answer's cost stays readable.
       const lastDelta = w.lastLimitDelta[kind]
-      const thisText =
-        thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this') + (thisDelta > 0 ? fmtSplit(splitDelta(thisDelta, turnAgentShare)) : '')
-      const lastText =
-        lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last') + (lastDelta > 0 ? fmtSplit(splitDelta(lastDelta, w.lastAgentShare ?? null)) : '')
-      // What agents spent since your last turn ended.
-      const background = !working && w.idleAgentSpent != null ? shareOf(agentSpent - w.idleAgentSpent, w.rates[kind]) : null
+      const thisText = thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this')
+      const lastText = lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last')
       // Counted from the last refresh; the minute timer keeps it current.
       const at = limit.resetsAt ? fmtReset(limit.resetsAt, kind !== 'five_hour') : ''
-      const reset = at ? `in ${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} (${at})` : ''
+      const reset = at ? `${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} → ${at}` : ''
       // Nearly gone: the bar and its figure turn red, as the context line does.
-      const isHot = limit.percentUsed >= HOT_PCT
-      const fill = isHot ? 'red' : 'claude'
-      const colors = PART_COLORS[isHot ? 'hot' : 'cool']
-      // The bar tinted by who used it: this session since the window began at
-      // the learned rate; before one is learned, the turn's change alone.
-      const rate = w.rates[kind]
-      const start = w.windowStart?.[kind]
-      let you = 0
-      let mine = 0
-      if (rate !== undefined && start) {
-        const agentsUsd = agentSpent - start.agentSpent
-        you = Math.max(0, w.spent - start.spent - agentsUsd) * rate
-        mine = Math.max(0, agentsUsd) * rate
-        // A rate learned while some spend went uncounted reads too high: never more than the bar.
-        const over = (you + mine) / Math.max(limit.percentUsed, 0.0001)
-        if (over > 1) {
-          you /= over
-          mine /= over
-        }
-      } else {
-        const delta = working ? thisDelta : lastDelta
-        if (delta !== undefined && delta > 0) {
-          const split = splitDelta(delta, working ? turnAgentShare : (w.lastAgentShare ?? null))
-          you = split.you
-          mine = split.agents
-        }
-      }
-      const parts = tintCells(limit.percentUsed, you, mine, width)
+      const fill = limit.percentUsed >= HOT_PCT ? 'red' : 'claude'
       return [
         <Text key={kind} wrap="truncate">
           <Text color="claude" bold>
             {LIMIT_LABELS[kind].padEnd(LABEL_WIDTH)}
           </Text>
-          {parts.map((p: BarPart, i) => (
-            <Text key={`p${i}`} color={p.part === 'empty' ? undefined : colors[p.part]} backgroundColor={TRACK}>
-              {p.text}
-            </Text>
-          ))}
+          <Text color={fill} backgroundColor={TRACK}>
+            {usageCells(limit.percentUsed, width)}
+          </Text>
           <Text color={fill} bold>
             {' '}
             {fmtPct(limit.percentUsed)}%
@@ -716,8 +644,7 @@ export const register: Register = on => {
           )}
           {thisText && <Text color="claude">{` ${thisText}`}</Text>}
           {lastText && <Text color="claude">{` ${lastText}`}</Text>}
-          {background !== null && background > 0 && <Text color={AGENT_COLOR}>{` ⑂ +${fmtPct(background)}% background`}</Text>}
-          <Text dimColor>{reset ? ` · resets ${reset}` : ' · window reset'}</Text>
+          <Text dimColor>{reset ? ` · ${reset}` : ' · window reset'}</Text>
         </Text>,
       ]
     })

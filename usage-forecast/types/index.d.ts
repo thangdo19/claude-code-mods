@@ -34,9 +34,6 @@ export type Agent = {
   order: number
 }
 
-/** This session's spend when a limit's current window was first seen. */
-export type WindowStart = { resetsAt?: string; spent: number; agentSpent: number }
-
 export type Weather = {
   /** Context tokens in use; null when unknown (right after compaction). */
   tokens: number | null
@@ -89,18 +86,10 @@ export type Weather = {
   forks: string[]
   /** $ all agents of this session spent, part of `spent`; kept across /clear and dropped records. */
   agentSpent: number
-  /** `agentSpent` when the running main turn began; null between turns. */
-  turnStartAgentSpent: number | null
-  /** The agents' part (0 to 1) of the last finished turn's spend; null when it spent nothing. */
-  lastAgentShare: number | null
-  /** `agentSpent` when the last main turn ended: what agents spent since is background spend. */
-  idleAgentSpent: number | null
   /** $ compactions cost since the last measured main turn. */
   compactSpent: number
   /** $ the compaction within `lastDelta` cost; null when none ran. */
   lastCompactSpent: number | null
-  /** Each limit's current window, and this session's spend when it was first seen in it. */
-  windowStart: Record<string, WindowStart>
   /** When a /clear ended the last conversation; the next cost ledger counts in full from it. */
   clearedAt: number | null
 }

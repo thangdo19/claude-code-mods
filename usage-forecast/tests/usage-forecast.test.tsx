@@ -5,8 +5,6 @@ import {
   addSpend,
   agentEntries,
   fitItems,
-  splitDelta,
-  tintCells,
   fmtLeft,
   fmtLimitDelta,
   fmtModel,
@@ -102,12 +100,14 @@ describe('helpers', () => {
   })
 
   test('limit change wording', () => {
-    expect(fmtLimitDelta(1.5, 'last')).toBe('▲ +1.5% last turn')
-    expect(fmtLimitDelta(0, 'last')).toBe('▲ <1% last turn')
-    expect(fmtLimitDelta(-93, 'last')).toBe('↺ reset last turn')
-    expect(fmtLimitDelta(0.5, 'this')).toBe('+0.5% this turn')
+    expect(fmtLimitDelta(1.5, 'last')).toBe('▲ +1.5% last')
+    expect(fmtLimitDelta(0, 'last')).toBe('▲ <1% last')
+    expect(fmtLimitDelta(-93, 'last')).toBe('↺ reset last')
+    expect(fmtLimitDelta(0.5, 'this')).toBe('+0.5% now')
     expect(fmtLimitDelta(0, 'this')).toBe('')
-    expect(fmtLimitDelta(-1, 'this')).toBe('↺ reset this turn')
+    expect(fmtLimitDelta(-1, 'this')).toBe('↺ reset now')
+    // No "you" or "turn" in a limit row any more.
+    for (const d of [-1, 0, 0.5]) for (const span of ['this', 'last'] as const) expect(fmtLimitDelta(d, span)).not.toMatch(/you|turn/)
   })
 
   test('model names', () => {
@@ -245,7 +245,7 @@ describe('band', () => {
     await step()
     const working = await $.ui.mount({ ...band, props: props(true) })
     expect(await working.find({ type: 'Text', text: /40%/ })).toBeDefined()
-    expect(await working.find({ type: 'Text', text: /\+1% this turn/ })).toBeDefined()
+    expect(await working.find({ type: 'Text', text: /\+1% now/ })).toBeDefined()
 
     usage = { ...usage, context: { window: 200000, tokens: 134400 }, rateLimits: [limit('five_hour', 5.5), limit('seven_day', 0)] }
     await step()
@@ -256,30 +256,32 @@ describe('band', () => {
     expect(await idle.find({ type: 'Text', text: /134\.4k \/ 200k/ })).toBeDefined()
     expect(await idle.find({ type: 'Text', text: /▲ \+98\.3k last turn/ })).toBeDefined()
     expect(await idle.find({ type: 'Text', text: /^ 5\.5%$/ })).toBeDefined()
-    expect(await idle.find({ type: 'Text', text: /▲ \+1\.5% last turn/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /▲ \+1\.5% last/ })).toBeDefined()
     // Week did not move: the slot reads <1% instead of going blank.
-    expect(await idle.find({ type: 'Text', text: /▲ <1% last turn/ })).toBeDefined()
-    expect(await idle.find({ type: 'Text', text: /this turn/ })).toBeUndefined()
+    expect(await idle.find({ type: 'Text', text: /▲ <1% last$/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /% now/ })).toBeUndefined()
     // 10:00 to 21:50 UTC: the countdown, then the local clock time.
-    expect(await idle.find({ type: 'Text', text: /^ · resets in 11h 50m \(.+\)$/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /^ · 11h 50m → .+$/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /resets in|you/ })).toBeUndefined()
 
     // A 100-column terminal shrinks the bar to 11 cells so both deltas and the reset still fit.
     const narrow = await $.ui.mount({ ...band, props: { ...props(false), bodyColumns: 100 } })
-    // Tinted by who used it: before a rate is learned, the last turn's change is this session's own.
-    expect((await narrow.find({ type: 'Text', text: /^▌$/ }))?.props.color).toBe('claude')
-    expect(await narrow.find({ type: 'Text', text: /^ {10}$/ })).toBeDefined()
+    // One orange bar, empty cells included: 5.5% of 11 cells is half a cell.
+    const bar = await narrow.find({ type: 'Text', text: /^▌ {10}$/ })
+    expect(bar?.props.color).toBe('claude')
+    expect(bar?.props.backgroundColor).toBe('#4a2e25')
 
     // The next answer starts: the previous one's cost stays on screen.
     await $.turn.start({ text: 'next', turnId: 't2' })
     const next = await $.ui.mount({ ...band, props: props(true) })
-    expect(await next.find({ type: 'Text', text: /▲ \+1\.5% last turn/ })).toBeDefined()
-    expect(await next.find({ type: 'Text', text: /this turn/ })).toBeUndefined()
+    expect(await next.find({ type: 'Text', text: /▲ \+1\.5% last/ })).toBeDefined()
+    expect(await next.find({ type: 'Text', text: /% now/ })).toBeUndefined()
 
     usage = { ...usage, rateLimits: [limit('five_hour', 6), limit('seven_day', 0)] }
     await step()
     const both = await $.ui.mount({ ...band, props: props(true) })
-    expect(await both.find({ type: 'Text', text: /\+0\.5% this turn/ })).toBeDefined()
-    expect(await both.find({ type: 'Text', text: /▲ \+1\.5% last turn/ })).toBeDefined()
+    expect(await both.find({ type: 'Text', text: /\+0\.5% now/ })).toBeDefined()
+    expect(await both.find({ type: 'Text', text: /▲ \+1\.5% last/ })).toBeDefined()
 
   })
 
@@ -333,7 +335,7 @@ describe('band', () => {
     expect(await ui.find({ type: 'Text', text: /·{12}/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /compacted/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^ 22%$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▲ \+2% last turn/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▲ \+2% last/ })).toBeDefined()
   })
 
   test('limits pushed by session.measure show live and are saved for next time', async ($, on) => {
@@ -404,7 +406,7 @@ describe('edge cases', () => {
     expect(await ui.find({ type: 'Text', text: /·{12}/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /\+30k last turn/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^ 23%$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▲ \+3% last turn/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▲ \+3% last/ })).toBeDefined()
   })
 
   test('a background precompute leaves the reading alone; a real compaction blanks it', async ($, on) => {
@@ -440,7 +442,7 @@ describe('edge cases', () => {
     s.usage = { ...s.usage, rateLimits: [limit('five_hour', 2, '2026-10-10T15:30:00Z')] }
     await complete($, 't1')
     const next = await $.ui.mount({ ...band, props: props(false) })
-    expect(await next.find({ type: 'Text', text: /▲ \+2% last turn/ })).toBeDefined()
+    expect(await next.find({ type: 'Text', text: /▲ \+2% last/ })).toBeDefined()
   })
 
   test('a window that resets during a turn says so instead of going blank', async ($, on) => {
@@ -452,12 +454,12 @@ describe('edge cases', () => {
     s.usage = { ...s.usage, rateLimits: [limit('five_hour', 2, '2026-10-10T15:00:00Z')] }
     await step($, 't1')
     const working = await $.ui.mount({ ...band, props: props(true) })
-    expect(await working.find({ type: 'Text', text: /↺ reset this turn/ })).toBeDefined()
+    expect(await working.find({ type: 'Text', text: /↺ reset now/ })).toBeDefined()
 
     await complete($, 't1')
     const idle = await $.ui.mount({ ...band, props: props(false) })
-    expect(await idle.find({ type: 'Text', text: /↺ reset last turn/ })).toBeDefined()
-    expect(await idle.find({ type: 'Text', text: /this turn/ })).toBeUndefined()
+    expect(await idle.find({ type: 'Text', text: /↺ reset last$/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /% now/ })).toBeUndefined()
   })
 
   test('a shrink against the start estimate is not called a compaction; a real one is', async ($, on) => {
@@ -503,7 +505,7 @@ describe('edge cases', () => {
     const ui = await $.ui.mount({ ...band, props: props(false) })
     expect(await ui.find({ type: 'Text', text: /·{11}/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /▲ \+43\.9k last turn/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▲ \+2% last turn/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▲ \+2% last/ })).toBeDefined()
 
     // One that was interrupted after a reply still counts.
     await $.turn.start({ text: 'again', turnId: 't3' })
@@ -524,7 +526,7 @@ describe('edge cases', () => {
     await $.session.measure({ context: { window: 200000, tokens: 30000 }, rateLimits: [limit('five_hour', 6, '2026-10-10T10:30:00Z')], changed: ['context', 'rateLimits'] })
     await complete($, 't1')
     const done = await $.ui.mount({ ...band, props: props(false) })
-    expect(await done.find({ type: 'Text', text: /▲ \+2% last turn/ })).toBeDefined()
+    expect(await done.find({ type: 'Text', text: /▲ \+2% last/ })).toBeDefined()
 
     await clock.advance(31 * 60_000)
     const later = await $.ui.mount({ ...band, props: props(false) })
@@ -598,7 +600,7 @@ describe('edge cases', () => {
     s.usage = { ...s.usage, rateLimits: [limit('five_hour', 14)] }
     await step($, 't1')
     const working = await $.ui.mount({ ...band, props: props(true) })
-    expect(await working.find({ type: 'Text', text: /^ \+1% this turn$/ })).toBeDefined()
+    expect(await working.find({ type: 'Text', text: /^ \+1% now$/ })).toBeDefined()
     expect(await working.find({ type: 'Text', text: /~|est\./ })).toBeUndefined()
     // Its spend is saved under a key of its own, for the other session to count.
     const own = Object.keys(saved).find(k => k.startsWith('spend.') && k !== 'spend.other')
@@ -609,7 +611,7 @@ describe('edge cases', () => {
     // Both sessions' $3.5 moved 4 points: the rate is relearned from them,
     // and this session's $0.5 comes to 0.6 of the 4.
     expect((saved['rates.v2'] as Record<string, { rate: number }>).five_hour?.rate).toBe(4 / 3.5)
-    expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last turn/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last/ })).toBeDefined()
   })
 
   test('a session with no live reading of its own still shows its share', async ($, on) => {
@@ -625,10 +627,10 @@ describe('edge cases', () => {
     s.usage = { ...s.usage, cost: { usd: 2.4 } } as typeof s.usage
     await step($, 't1')
     const working = await $.ui.mount({ ...band, props: props(true) })
-    expect(await working.find({ type: 'Text', text: /^ \+0\.6% this turn$/ })).toBeDefined()
+    expect(await working.find({ type: 'Text', text: /^ \+0\.6% now$/ })).toBeDefined()
     await complete($, 't1')
     const idle = await $.ui.mount({ ...band, props: props(false) })
-    expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last turn/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /▲ \+0\.6% last/ })).toBeDefined()
   })
 
   test('after a /clear, spend is saved again and no rate shows more than the account moved', async ($, on) => {
@@ -651,7 +653,7 @@ describe('edge cases', () => {
     expect(saved[own!]).toEqual({ usd: 11, at: NOW })
     expect(saved.rates).toBeUndefined()
     const idle = await $.ui.mount({ ...band, props: props(false) })
-    expect(await idle.find({ type: 'Text', text: /▲ \+7% last turn/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /▲ \+7% last/ })).toBeDefined()
   })
 
   test("before any rate, another session's reading from just now is the baseline", async ($, on) => {
@@ -665,18 +667,18 @@ describe('edge cases', () => {
     s.usage = { ...s.usage, rateLimits: [limit('five_hour', 33)] }
     await step($, 't1')
     const working = await $.ui.mount({ ...band, props: props(true) })
-    expect(await working.find({ type: 'Text', text: /^ \+2% this turn$/ })).toBeDefined()
+    expect(await working.find({ type: 'Text', text: /^ \+2% now$/ })).toBeDefined()
   })
 
-  test('saved limits show as other usage, with no age note', async ($, on) => {
+  test('saved limits draw the same orange bar, with no age note', async ($, on) => {
     mock.clock(on, { now: NOW })
     mock.store(on, { lastLimits: { at: NOW - 5 * 60_000, limits: [limit('five_hour', 4)] } })
     harness(on, { estimate: 10000 })
     await start($)
     const ui = await $.ui.mount({ ...band, props: props(false) })
-    // Nothing of it is this session's: the dim orange of other usage.
-    const bar = await ui.find({ type: 'Text', text: /^█▏$/ })
-    expect(bar?.props.color).toBe('#8f4f3a')
+    // One orange bar, saved or live: 4% of 30 cells is 1.2 cells.
+    const bar = await ui.find({ type: 'Text', text: /^█▏ {28}$/ })
+    expect(bar?.props.color).toBe('claude')
     expect(bar?.props.dimColor).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^Session/ }))?.props.dimColor).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /as of/ })).toBeUndefined()
@@ -690,6 +692,9 @@ describe('edge cases', () => {
     const ui = await $.ui.mount({ ...band, props: props(false) })
     expect((await ui.find({ type: 'Text', text: /^ 90%$/ }))?.props.color).toBe('red')
     expect((await ui.find({ type: 'Text', text: /^ 89\.9%$/ }))?.props.color).toBe('claude')
+    // The whole bar turns with its figure: 27 of 30 cells red, 26⅞ orange.
+    expect((await ui.find({ type: 'Text', text: /^█{27} {3}$/ }))?.props.color).toBe('red')
+    expect((await ui.find({ type: 'Text', text: /^█{26}▉ {3}$/ }))?.props.color).toBe('claude')
     expect(await ui.find({ type: 'Text', text: /◆/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /☀ Clear/ })).toBeDefined()
   })
@@ -847,10 +852,10 @@ describe('edge cases', () => {
       await $.turn.start({ text: 'go', turnId: 'xa1', agentId: 'a1' })
       s.usage = { ...s.usage, rateLimits: [limit('five_hour', 14)] }
       await agentStep($, 'a1')
-      expect(await (await mount($, true)).find({ type: 'Text', text: /^ \+4% this turn$/ })).toBeDefined()
+      expect(await (await mount($, true)).find({ type: 'Text', text: /^ \+4% now$/ })).toBeDefined()
     })
 
-    test('each answer costs the loop that asked: the turn splits, the agent is listed with its model', async ($, on) => {
+    test('each answer costs the loop that asked: the turn counts both, the agent is listed with its model', async ($, on) => {
       const s = setup(on)
       await start($)
       await $.turn.start({ text: 'hi', turnId: 't1' })
@@ -861,20 +866,21 @@ describe('edge cases', () => {
       await agentStep($, 'a1')
 
       const ui = await mount($, true)
-      expect(await ui.find({ type: 'Text', text: /^ \+1\.5% this turn \(you 1 · ⑂ 0\.5\)$/ })).toBeDefined()
+      // The turn's whole change, agents included, with no split.
+      expect(await ui.find({ type: 'Text', text: /^ \+1\.5% now$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /^⑂ 1 agent$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /^Explore·Haiku 5\.5$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /^ \+0\.5%$/ })).toBeDefined()
-      // The bar: other usage, yours, then the agents' part in its own color.
-      expect((await ui.find({ type: 'Text', text: /^█▌$/ }))?.props.color).toBe('#5fb8b4')
+      // The bar is one orange stretch: no tint for the agents' part.
+      expect((await ui.find({ type: 'Text', text: /^█{3}▌ {26}$/ }))?.props.color).toBe('claude')
 
       // Your turn ends; the agent keeps spending in the background.
       await complete($, 't1')
       read(s, 1)
       await agentStep($, 'a1')
       let idle = await mount($, false)
-      expect(await idle.find({ type: 'Text', text: /^ ▲ \+1\.5% last turn \(you 1 · ⑂ 0\.5\)$/ })).toBeDefined()
-      expect(await idle.find({ type: 'Text', text: /^ ⑂ \+0\.5% background$/ })).toBeDefined()
+      expect(await idle.find({ type: 'Text', text: /^ ▲ \+1\.5% last$/ })).toBeDefined()
+      expect(await idle.find({ type: 'Text', text: /background|you/ })).toBeUndefined()
 
       // Finished: marked done, and gone once your next turn starts.
       await agentDone($, 'a1')
@@ -907,7 +913,7 @@ describe('edge cases', () => {
       read(s, 0.5, { rateLimits: [limit('five_hour', 12)] })
       await agentStep($, 'fork1')
       const ui = await mount($, true)
-      expect(await ui.find({ type: 'Text', text: /^ \+1% this turn$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^ \+1% now$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /agent/ })).toBeUndefined()
     })
 
@@ -945,7 +951,8 @@ describe('edge cases', () => {
       await agentStep($, 'a1')
       const ui = await mount($, false)
       expect(await ui.find({ type: 'Text', text: /^⑂ 1 agent$/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /^ ⑂ \+0\.5% background$/ })).toBeDefined()
+      // Its spend counts: its share of Session is listed beside it.
+      expect(await ui.find({ type: 'Text', text: /^ \+0\.5%$/ })).toBeDefined()
     })
 
     test('a gateway spend limit draws its own row, and says when it is over', async ($, on) => {
@@ -961,20 +968,6 @@ describe('edge cases', () => {
 })
 
 describe('agent helpers', () => {
-  test('a tinted bar never stretches the fill, and a small share still shows', () => {
-    expect(tintCells(12, 1, 0.5, 30).map(p => [p.part, p.text.length])).toEqual([['other', 1], ['you', 1], ['agents', 2], ['empty', 26]])
-    expect(tintCells(4, 0, 0, 30)[0]).toEqual({ part: 'other', text: '█▏' })
-    // Under one eighth: nothing to draw, whoever spent it.
-    expect(tintCells(0.3, 0.3, 0, 10)).toEqual([{ part: 'empty', text: ' '.repeat(10) }])
-    expect(tintCells(150, 0, 0, 10)).toEqual([{ part: 'other', text: '█'.repeat(10) }])
-  })
-
-  test('a change splits by spend; a reset or no agent spend stays whole', () => {
-    expect(splitDelta(1.5, 1 / 3)).toEqual({ you: 1, agents: 0.5 })
-    expect(splitDelta(-3, 0.5)).toEqual({ you: -3, agents: 0 })
-    expect(splitDelta(2, null)).toEqual({ you: 2, agents: 0 })
-  })
-
   test('agents list in spawn order, a child under its parent, a workflow run as one', () => {
     const a = (order: number, more: Record<string, unknown> = {}) => ({
       type: 'Explore', description: '', model: null, effort: null, status: 'running' as const, spent: 1, background: false,

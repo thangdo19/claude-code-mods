@@ -42,12 +42,11 @@ While you view an agent's transcript (← for agents), the line becomes one row 
 | Part | Meaning |
 |---|---|
 | `Session` / `Week` / `Spend` | Your 5-hour limit, your weekly limit, and a company gateway's spend limit if you have one. |
-| The bar's colors | Dim orange: everyone else's usage (other sessions, claude.ai). Orange: this session's own. Teal: this session's agents. |
-| `95%` | How much of that limit you've used. The bar turns red at 90% and up. `over by 4%` past 100%. |
-| `▲ +0.2% last turn` | What your last turn used. |
-| `+1.2% this turn (you 0.8 · ⑂ 0.4)` | What the running turn has used so far, and how it splits between you and your agents (only while Claude works). |
-| `⑂ +0.7% background` | What your agents used since your last turn ended. |
-| `resets in 37m (6:30pm)` | Time left until the limit resets, then the clock time. |
+| The bar | Orange: how much of the limit is used (all sessions, claude.ai too). The whole bar turns red at 90% and up. |
+| `95%` | How much of that limit you've used. `over by 4%` past 100%. |
+| `▲ +0.2% last` | What your last turn used, agents included. |
+| `+1.2% now` | What the running turn has used so far, agents included (only while Claude works). |
+| `37m → 6:30pm` | Time left until the limit resets, then the clock time. |
 
 ## Install
 
@@ -83,9 +82,9 @@ npx -p typescript tsc -p .   # type check
 - **Messages you may see:**
   - `waiting for first reply`: a new session, before Claude has answered.
   - `measuring…`: right after a compaction, `/clear` or `/resume`, until the next reply.
-  - `↺ reset this turn` / `↺ reset last turn`: the limit reset during that turn.
+  - `↺ reset now` / `↺ reset last`: the limit reset during that turn.
   - `window reset`: the limit's reset time has passed, until a new reading arrives.
   - `↻ switched from Opus 5.5`: the model changed (`/model`, or an automatic fallback). Stays until one whole turn has run on the new model. Helper agents' models never count.
 - **New session:** the bars show the last readings saved by an earlier session until Claude replies.
-- **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go. The bar colors keep counting for this terminal.
+- **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go.
 - **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings.

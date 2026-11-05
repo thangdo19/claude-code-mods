@@ -122,14 +122,16 @@ export const reviveLimits = <L extends { percentUsed: number; resetsAt?: string 
   )
 
 /**
- * A limit's change over a turn, as the row writes it. A negative change means
+ * A limit's change over a turn, as the row writes it: "+1.2% now" for the
+ * running turn, "▲ +0.3% last" for the one before. A negative change means
  * its window reset mid-turn. Readings come in whole points, so a finished turn
  * that moved nothing reads "<1%"; a running one shows nothing until it moves.
  */
 export const fmtLimitDelta = (delta: number, span: 'this' | 'last'): string => {
-  if (delta < 0) return `↺ reset ${span} turn`
-  if (delta > 0) return `${span === 'last' ? '▲ ' : ''}+${fmtPct(delta)}% ${span} turn`
-  return span === 'last' ? '▲ <1% last turn' : ''
+  const word = span === 'this' ? 'now' : 'last'
+  if (delta < 0) return `↺ reset ${word}`
+  if (delta > 0) return `${span === 'last' ? '▲ ' : ''}+${fmtPct(delta)}% ${word}`
+  return span === 'last' ? '▲ <1% last' : ''
 }
 
 type Ledger = { usd: number | null; spent: number; costFrom: number | null }
@@ -229,51 +231,6 @@ export const limitDeltas = (
   )
 
 export const LIMIT_KINDS = ['five_hour', 'seven_day', 'spend_limit'] as const
-
-/** One stretch of a tinted bar: other usage, this session's own, or its agents'. */
-export type BarPart = { text: string; part: 'other' | 'you' | 'agents' | 'empty' }
-
-/**
- * A /usage-style bar exactly `width` cells wide, split into the account's
- * other usage, then this session's own, then its agents', in eighths of a
- * cell. A share too small for one cell still gets one (as far as the fill
- * reaches), so it never vanishes; the fill itself is never stretched.
- */
-export const tintCells = (pct: number, you: number, agents: number, width: number): BarPart[] => {
-  const total = Math.floor((Math.max(0, Math.min(100, pct)) / 100) * width * 8)
-  const eighths = (share: number) => (share > 0 ? Math.max(8, Math.round((Math.min(100, share) / 100) * width * 8)) : 0)
-  // Never past the fill: the agents' part first, then yours.
-  const a = Math.min(eighths(agents), total)
-  const y = Math.min(eighths(you), total - a)
-  const youFrom = total - a - y
-  const agentsFrom = total - a
-  const parts: BarPart[] = []
-  for (let cell = 0; cell < width; cell++) {
-    const filled = Math.max(0, Math.min(8, total - cell * 8))
-    // A cell takes the color of the part at the middle of its fill.
-    const mid = cell * 8 + filled / 2
-    const part: BarPart['part'] = filled === 0 ? 'empty' : mid < youFrom ? 'other' : mid < agentsFrom ? 'you' : 'agents'
-    const ch = filled === 0 ? ' ' : filled === 8 ? '█' : EIGHTHS[filled]!
-    const last = parts.at(-1)
-    if (last && last.part === part) last.text += ch
-    else parts.push({ text: ch, part })
-  }
-  return parts
-}
-
-/**
- * A turn's change split between this session's main loop and its agents, by
- * how its spend divided; the agents' part at one decimal, the rest yours.
- */
-export const splitDelta = (delta: number, agentShare: number | null): { you: number; agents: number } => {
-  if (delta <= 0 || agentShare === null || agentShare <= 0) return { you: delta, agents: 0 }
-  const agents = Math.round(Math.min(1, agentShare) * delta * 10) / 10
-  return { you: Math.round((delta - agents) * 10) / 10, agents }
-}
-
-/** A limit's change with the agents' part named: "+1.2% this turn (you 0.8 · ⑂ 0.4)". */
-export const fmtSplit = (split: { you: number; agents: number }): string =>
-  split.agents > 0 ? ` (you ${fmtPct(split.you)} · ⑂ ${fmtPct(split.agents)})` : ''
 
 /** $ as a share of a window, one decimal, at least 0.1 once anything was spent; null with no rate. */
 export const shareOf = (usd: number, rate: number | undefined): number | null => {
