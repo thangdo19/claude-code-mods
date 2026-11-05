@@ -8,9 +8,24 @@ You can look away while Claude works. The voice tells you when it's your turn.
 
 ## When it plays
 
-- **Claude finished its reply** (the `Stop` hook).
+Only when it's your turn:
+
+- **Claude is done**: it finished its reply and nothing will wake it up again (the `Stop` hook).
+- **Claude stopped on an error**, like a usage limit or the API being down (`StopFailure`).
 - **Claude asks permission**: to run a tool, or to go ahead with a plan (`PermissionRequest`).
-- **Claude needs you for something else**, like a question from an MCP server (`Notification`).
+- **Claude needs you for something else**, like a question from an MCP server, or a teammate or background session that needs you (`Notification`).
+
+## When it stays quiet
+
+Claude sometimes ends its turn only to wait. It comes back on its own, so the voice waits too:
+
+- **Helpers are still working**: background subagents, workflows, or teammates.
+- **A background command or monitor is still running.**
+- **Claude scheduled a one-time wake-up** ("I'll check back in 20 minutes").
+
+When the last of these finishes, Claude wakes up, wraps up, and the voice plays then.
+
+⚠️ A dev server left running in the background keeps the "done" voice off until it stops. Alerts that need you still play.
 
 ## Install
 
@@ -51,7 +66,10 @@ Or inside Claude Code: `/plugin configure producer-tag@claude-code-mods`, or `/c
 
 - **No double plays:** one prompt can trigger two alerts at once, so the tag won't play again within 4 seconds.
 - **Reminders:** after 6 seconds at a permission dialog, Claude Code sends a reminder. For a tool or plan dialog the tag already played, so the reminder stays quiet. Any other dialog plays on its reminder.
-- **Stays quiet** when a helper agent (subagent) finishes, when a Stop hook sends Claude back to work, and for the 60-second "still idle" nudge.
+- **A short wait before "done":** the voice waits 1.5 seconds (`SETTLE_MS`). If a helper finished during Claude's last reply, Claude starts again right away and the voice stays quiet until the real finish.
+- **Stop hooks:** if a Stop hook (or a `/goal`) sends Claude back to work, the voice waits for the finish that sticks.
+- **Also stays quiet** when a helper agent (subagent) finishes, for the 60-second "still idle" nudge, and for notices that don't need you: logins, push notifications Claude sends, computer use starting or stopping, other plugins' alerts.
+- **Repeating schedules** (`/loop 5m`, a cron) don't hold back "done", so a normal chat still plays.
 - **Never in the way:** the sound plays in the background. It never slows Claude down, and if it can't play, nothing breaks.
 
 ## Credits

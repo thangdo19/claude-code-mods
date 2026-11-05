@@ -1,18 +1,23 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { AgentInfo, On } from 'claude-code'
 
-import { COOLDOWN_MS, mimeOf, TAG } from '../hooks/register'
+import { COOLDOWN_MS, mimeOf, SETTLE_MS, TAG } from '../hooks/register'
 
 // Answers the engine's side: the classic events, and audio.play recorded instead of heard.
-function setup(on: On) {
+// `agents` is what $.agent.list() answers (null refuses it); `stopAnswer` is
+// what the settings hooks beneath Stop answer.
+function setup(on: On, agents: AgentInfo[] | null = [], stopAnswer: () => { block?: string } = () => ({})) {
   const clock = mock.clock(on, { now: Date.parse('2026-10-11T10:00:00Z') })
   const plays: unknown[] = []
   on('audio.play', ($, e) => {
     plays.push(e)
     return { value: undefined }
   })
-  on('classic.Stop', () => ({}))
+  on('agent.list', () => (agents ? { value: agents } : { deny: 'unavailable' }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('classic.Stop', () => stopAnswer())
+  on('classic.StopFailure', () => ({}))
   on('classic.PermissionRequest', () => ({}))
   on('classic.Notification', () => ({}))
   on('classic.PostToolUse', () => ({}))
@@ -29,11 +34,40 @@ const networkReminder = { message: 'A sandboxed command needs network access', n
 // Claude Code reminds about an open dialog once the person has been idle 6s.
 const REMINDER_DELAY_MS = 10_000
 
+// One in-flight background task as Stop's `background_tasks` lists it.
+const task = (type: string, id = `${type}-1`) => ({ id, type, status: 'running', description: type })
+const subagent = task('subagent', 'a1')
+const agent = (id: string, more: Partial<AgentInfo> = {}): AgentInfo => ({
+  id,
+  description: 'look around',
+  type: 'Explore',
+  status: 'running',
+  ...more,
+})
+// A one-time wake-up (ScheduleWakeup) and a repeating schedule (/loop 5m).
+const wakeUp = { id: 'c1', schedule: '30 10 11 10 *', recurring: false, prompt: 'check back' }
+const everyFive = { id: 'c2', schedule: '*/5 * * * *', recurring: true, prompt: 'poll' }
+
+// Claude stops, and the short wait for a new turn passes.
+async function stopped($: Engine, clock: MockClock, e: Parameters<Engine['classic']['Stop']>[0] = stop) {
+  await $.classic.Stop(e)
+  await clock.advance(SETTLE_MS)
+}
+
 describe('producer-tag', () => {
   test('plays the tag when Claude finishes', async ($, on) => {
-    const { plays } = setup(on)
-    await $.classic.Stop(stop)
+    const { clock, plays } = setup(on)
+    await stopped($, clock)
     expect(plays).toEqual([expect.objectContaining({ clip: { asset: TAG } })])
+  })
+
+  test('a finish waits a moment before it plays', async ($, on) => {
+    const { clock, plays } = setup(on)
+    await $.classic.Stop(stop)
+    await clock.advance(SETTLE_MS - 1)
+    expect(plays).toHaveLength(0)
+    await clock.advance(1)
+    expect(plays).toHaveLength(1)
   })
 
   test('plays the tag when a plan waits for approval', async ($, on) => {
@@ -51,16 +85,45 @@ describe('producer-tag', () => {
 
   test('plays again once the cooldown has passed', async ($, on) => {
     const { clock, plays } = setup(on)
-    await $.classic.Stop(stop)
+    await stopped($, clock)
     await clock.advance(COOLDOWN_MS)
     await $.classic.PermissionRequest(planApproval)
     expect(plays).toHaveLength(2)
   })
 
-  test('stays quiet for the idle nudge and for a Stop hook re-run', async ($, on) => {
+  test('stays quiet for the idle nudge', async ($, on) => {
     const { plays } = setup(on)
     await $.classic.Notification({ message: 'Claude is waiting for your input', notification_type: 'idle_prompt' })
-    await $.classic.Stop({ stop_hook_active: true })
+    expect(plays).toHaveLength(0)
+  })
+
+  test('plays for alerts that need you', async ($, on) => {
+    const { clock, plays } = setup(on)
+    for (const type of ['elicitation_dialog', 'elicitation_url_dialog', 'worker_permission_prompt', 'agent_needs_input']) {
+      await $.classic.Notification({ message: 'needs you', notification_type: type })
+      await clock.advance(COOLDOWN_MS)
+    }
+    expect(plays).toHaveLength(4)
+  })
+
+  test('stays quiet for alerts that do not need you', async ($, on) => {
+    const { clock, plays } = setup(on)
+    const types = [
+      'auth_success',
+      'push_notification',
+      'computer_use_enter',
+      'computer_use_exit',
+      'plugin_notification',
+      'elicitation_complete',
+      'elicitation_response',
+      'quota_auto_resume_fired',
+      'model_refusal_fallback',
+      'something_new',
+    ]
+    for (const type of types) {
+      await $.classic.Notification({ message: 'fyi', notification_type: type })
+      await clock.advance(COOLDOWN_MS)
+    }
     expect(plays).toHaveLength(0)
   })
 
@@ -114,14 +177,14 @@ describe('producer-tag', () => {
     await $.classic.Notification(planReminder)
     await $.classic.PostToolUse({ ...planApproval, tool_response: {}, tool_use_id: 't1' })
     await clock.advance(REMINDER_DELAY_MS)
-    await $.classic.Stop(stop)
+    await stopped($, clock)
     expect(plays).toHaveLength(2)
   })
 
   test('a turn end or a new prompt forgets announced dialogs', async ($, on) => {
     const { clock, plays } = setup(on)
     await $.classic.PermissionRequest(bashApproval)
-    await $.classic.Stop(stop)
+    await stopped($, clock)
     await clock.advance(REMINDER_DELAY_MS)
     await $.classic.Notification(permissionNotice)
     await $.classic.PermissionRequest(bashApproval)
@@ -132,12 +195,112 @@ describe('producer-tag', () => {
   })
 
   test('a failed play does not break the hook', async ($, on) => {
-    mock.clock(on, { now: 0 })
+    const clock = mock.clock(on, { now: 0 })
     on('audio.play', () => {
       throw new Error('no player')
     })
-    on('classic.Stop', () => ({ block: 'kept' }))
-    expect(await $.classic.Stop(stop)).toEqual({ block: 'kept' })
+    on('classic.Stop', () => ({ additionalContext: ['kept'] }))
+    expect(await $.classic.Stop(stop)).toEqual({ additionalContext: ['kept'] })
+    await clock.advance(SETTLE_MS)
+  })
+})
+
+describe('waiting is not finishing', () => {
+  test('stays quiet while a background subagent runs, plays once it is done', async ($, on) => {
+    const { clock, plays } = setup(on, [agent('a1')])
+    await stopped($, clock, { ...stop, background_tasks: [subagent] })
+    expect(plays).toHaveLength(0)
+    await stopped($, clock, { ...stop, background_tasks: [] })
+    expect(plays).toHaveLength(1)
+  })
+
+  test('stays quiet while a workflow, a background command or a monitor runs', async ($, on) => {
+    const { clock, plays } = setup(on)
+    for (const type of ['workflow', 'shell', 'monitor']) {
+      await stopped($, clock, { ...stop, background_tasks: [task(type)] })
+    }
+    expect(plays).toHaveLength(0)
+  })
+
+  test("plays despite Claude Code's own chores and cloud sessions", async ($, on) => {
+    const { clock, plays } = setup(on)
+    const chores = ['dream', 'auto-mode scan', 'memory import', 'memory save', 'cloud session', 'MCP task', 'teammate']
+    await stopped($, clock, { ...stop, background_tasks: chores.map(t => task(t)) })
+    expect(plays).toHaveLength(1)
+  })
+
+  test("plays despite a plugin's own background agent", async ($, on) => {
+    const { clock, plays } = setup(on, [agent('a1', { spawnedBy: 'some-plugin' })])
+    await stopped($, clock, { ...stop, background_tasks: [subagent] })
+    expect(plays).toHaveLength(1)
+  })
+
+  test('stays quiet while a teammate works, plays once it is idle', async ($, on) => {
+    const teammate = { teammateId: 'ana@team', type: 'teammate' }
+    const agents = [agent('t1', { ...teammate, status: 'running' })]
+    const { clock, plays } = setup(on, agents)
+    await stopped($, clock)
+    expect(plays).toHaveLength(0)
+    agents[0] = agent('t1', { ...teammate, status: 'idle' })
+    await stopped($, clock)
+    expect(plays).toHaveLength(1)
+  })
+
+  test('stays quiet with a one-time wake-up pending, not for a repeating schedule', async ($, on) => {
+    const { clock, plays } = setup(on)
+    await stopped($, clock, { ...stop, session_crons: [wakeUp, everyFive] })
+    expect(plays).toHaveLength(0)
+    await stopped($, clock, { ...stop, session_crons: [everyFive] })
+    expect(plays).toHaveLength(1)
+  })
+
+  test('still plays when the agent list cannot be read', async ($, on) => {
+    const { clock, plays } = setup(on, null)
+    await stopped($, clock)
+    expect(plays).toHaveLength(1)
+  })
+
+  test('a new main turn right after the finish cancels it', async ($, on) => {
+    const { clock, plays } = setup(on)
+    await $.classic.Stop(stop)
+    await clock.advance(100)
+    await $.turn.start({ text: '', turnId: 't2' })
+    await clock.advance(SETTLE_MS)
+    expect(plays).toHaveLength(0)
+  })
+
+  test("a subagent's turn does not cancel the finish", async ($, on) => {
+    const { clock, plays } = setup(on)
+    await $.classic.Stop(stop)
+    await $.turn.start({ text: '', turnId: 't2', agentId: 'a1' })
+    await clock.advance(SETTLE_MS)
+    expect(plays).toHaveLength(1)
+  })
+
+  test('a Stop hook that sends Claude back stays quiet; the real finish after it plays', async ($, on) => {
+    let block: string | undefined = 'keep going'
+    const { clock, plays } = setup(on, [], () => (block ? { block } : {}))
+    await stopped($, clock)
+    expect(plays).toHaveLength(0)
+    block = undefined
+    await stopped($, clock, { stop_hook_active: true })
+    expect(plays).toHaveLength(1)
+  })
+
+  test("a subagent loop's Stop stays quiet", async ($, on) => {
+    const { clock, plays } = setup(on)
+    await stopped($, clock, { ...stop, agent_id: 'a1', agent_type: 'Explore' })
+    expect(plays).toHaveLength(0)
+  })
+
+  test('plays when the turn dies on an error, not for a subagent', async ($, on) => {
+    const { clock, plays } = setup(on)
+    await $.classic.StopFailure({ error: 'rate_limit', agent_id: 'a1' })
+    await clock.advance(SETTLE_MS)
+    expect(plays).toHaveLength(0)
+    await $.classic.StopFailure({ error: 'rate_limit' })
+    await clock.advance(SETTLE_MS)
+    expect(plays).toHaveLength(1)
   })
 })
 
@@ -153,10 +316,10 @@ function disk(on: On, files: Record<string, string>) {
 }
 
 // Claude finishes. Your own file is fetched and played in the background over
-// several steps, so the clock moves on a moment to let them all land.
+// several steps, so the clock moves on a moment more to let them all land.
 async function finish($: Engine, clock: MockClock) {
   await $.classic.Stop(stop)
-  await clock.advance(1)
+  await clock.advance(SETTLE_MS + 1)
 }
 
 describe('the sound option', () => {
