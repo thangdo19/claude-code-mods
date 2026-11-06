@@ -2,13 +2,32 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
 
-import { COOLDOWN_MS, mimeOf, SETTLE_MS, TAG } from '../hooks/register'
+import { COOLDOWN_MS, LAST_PLAYED_KEY, mimeOf, SETTLE_MS, TAG } from '../hooks/register'
+
+// When every test's clock starts.
+const START = Date.parse('2026-10-11T10:00:00Z')
 
 // Answers the engine's side: the classic events, and audio.play recorded instead of heard.
 // `agents` is what $.agent.list() answers (null refuses it); `stopAnswer` is
-// what the settings hooks beneath Stop answer.
-function setup(on: On, agents: AgentInfo[] | null = [], stopAnswer: () => { block?: string } = () => ({})) {
-  const clock = mock.clock(on, { now: Date.parse('2026-10-11T10:00:00Z') })
+// what the settings hooks beneath Stop answer; `stored` is what the plugin's
+// store holds, which every window shares (null refuses it).
+function setup(
+  on: On,
+  agents: AgentInfo[] | null = [],
+  stopAnswer: () => { block?: string } = () => ({}),
+  stored: Record<string, unknown> | null = {},
+) {
+  const clock = mock.clock(on, { now: START })
+  if (stored) {
+    on('store.get', ($, e) => ({ value: stored[e.key] }))
+    on('store.set', ($, e) => {
+      stored[e.key] = e.value
+      return { value: undefined }
+    })
+  } else {
+    on('store.get', () => ({ deny: 'locked' }))
+    on('store.set', () => ({ deny: 'locked' }))
+  }
   const plays: unknown[] = []
   on('audio.play', ($, e) => {
     plays.push(e)
@@ -196,6 +215,7 @@ describe('producer-tag', () => {
 
   test('a failed play does not break the hook', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
+    mock.store(on)
     on('audio.play', () => {
       throw new Error('no player')
     })
@@ -304,6 +324,61 @@ describe('waiting is not finishing', () => {
   })
 })
 
+// Alerts one window passes on for another: `claude agents` for a background
+// session, a team lead for its teammate.
+const relays = [
+  { message: 'fix login needs your input: approve Bash', notification_type: 'agent_needs_input' },
+  { message: 'ana needs permission for Bash', notification_type: 'worker_permission_prompt' },
+]
+// Another window played a second ago.
+const justPlayed = () => ({ [LAST_PLAYED_KEY]: START - 1000 })
+
+describe('one sound across windows', () => {
+  test("`claude agents` stays quiet for a session's finish: the session plays its own", async ($, on) => {
+    const { clock, plays } = setup(on)
+    await $.classic.Notification({ message: 'fix login finished', notification_type: 'agent_completed' })
+    await clock.advance(COOLDOWN_MS)
+    await $.classic.Notification({ message: 'fix login failed', notification_type: 'agent_completed' })
+    expect(plays).toHaveLength(0)
+  })
+
+  test('a passed-on alert stays quiet when another window just played', async ($, on) => {
+    const { clock, plays } = setup(on, [], undefined, justPlayed())
+    for (const relay of relays) await $.classic.Notification(relay)
+    expect(plays).toHaveLength(0)
+    await clock.advance(COOLDOWN_MS - 1000)
+    await $.classic.Notification(relays[0]!)
+    expect(plays).toHaveLength(1)
+  })
+
+  test("this window's own alerts play even right after another window's", async ($, on) => {
+    const { plays } = setup(on, [], undefined, justPlayed())
+    await $.classic.PermissionRequest(bashApproval)
+    expect(plays).toHaveLength(1)
+  })
+
+  test('a play tells the other windows when it played', async ($, on) => {
+    const stored = {}
+    const { clock } = setup(on, [], undefined, stored)
+    await stopped($, clock)
+    expect(stored).toEqual({ [LAST_PLAYED_KEY]: START + SETTLE_MS })
+  })
+
+  test("a passed-on alert plays when the store can't be read", async ($, on) => {
+    const { clock, plays } = setup(on, [], undefined, null)
+    await $.classic.Notification(relays[0]!)
+    await clock.advance(COOLDOWN_MS)
+    await $.classic.Notification(relays[1]!)
+    expect(plays).toHaveLength(2)
+  })
+
+  test('a recorded time ahead of now (the clock was set back) does not mute an alert', async ($, on) => {
+    const { plays } = setup(on, [], undefined, { [LAST_PLAYED_KEY]: START + 60_000 })
+    await $.classic.Notification(relays[0]!)
+    expect(plays).toHaveLength(1)
+  })
+})
+
 // The person's files, as fs.read hands them back; any other path is missing.
 function disk(on: On, files: Record<string, string>) {
   const reads: string[] = []
@@ -365,6 +440,7 @@ describe('the sound option', () => {
 
   test("a file that can't play falls back to the default tag", { options: { sound: '/bad.wav' } }, async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
+    mock.store(on)
     disk(on, { '/bad.wav': 'AAAA' })
     const plays: unknown[] = []
     on('audio.play', ($, e) => {

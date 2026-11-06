@@ -15,6 +15,8 @@ Only when it's your turn:
 - **Claude asks permission**: to run a tool, or to go ahead with a plan (`PermissionRequest`).
 - **Claude needs you for something else**, like a question from an MCP server, or a teammate or background session that needs you (`Notification`).
 
+In `claude agents`, each background session plays for itself, so you hear each one once. The agents screen stays quiet when a session finishes.
+
 ## When it stays quiet
 
 Claude sometimes ends its turn only to wait. It comes back on its own, so the voice waits too:
@@ -65,6 +67,8 @@ Or inside Claude Code: `/plugin configure producer-tag@claude-code-mods`, or `/c
 ## Details
 
 - **No double plays:** one prompt can trigger two alerts at once, so the tag won't play again within 4 seconds.
+- **No double plays across windows:** the agents screen passes on a background session's "needs your input", and a team lead passes on its teammate's permission request. Those play only if no Claude Code window played in the last 4 seconds. Every window saves when it last played in the mod's store (`~/.claude/plugins/store/`).
+- ⚠️ In `claude agents`, a session's question that isn't a tool or plan approval (like an MCP question) can still play twice, about 6 seconds apart: once from the agents screen, once from the session's own reminder.
 - **Reminders:** after 6 seconds at a permission dialog, Claude Code sends a reminder. For a tool or plan dialog the tag already played, so the reminder stays quiet. Any other dialog plays on its reminder.
 - **A short wait before "done":** the voice waits 1.5 seconds (`SETTLE_MS`). If a helper finished during Claude's last reply, Claude starts again right away and the voice stays quiet until the real finish.
 - **Stop hooks:** if a Stop hook (or a `/goal`) sends Claude back to work, the voice waits for the finish that sticks.

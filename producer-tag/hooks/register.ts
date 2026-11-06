@@ -17,14 +17,24 @@ const WAITED_ON = new Set(['subagent', 'workflow', 'shell', 'monitor'])
 // The notifications that mean "Claude needs you". Every dialog sends
 // `permission_prompt` unless it names another type here. The rest (logins, a
 // push Claude sent, computer use, a plugin's own alert, an MCP reply) stay quiet.
+// So does `agent_completed`: only `claude agents` sends it, for a background
+// session on this computer, and that session plays its own finish (it alone
+// knows whether it still waits for helpers).
 const NEEDS_YOU = new Set([
   'permission_prompt',
   'elicitation_dialog',
   'elicitation_url_dialog',
   'worker_permission_prompt',
   'agent_needs_input',
-  'agent_completed',
 ])
+
+// Alerts one window passes on for another, which mostly played already: `claude
+// agents` for a background session's dialog, a team lead for its teammate's
+// request. They play only if no window played within COOLDOWN_MS.
+const RELAYED = new Set(['agent_needs_input', 'worker_permission_prompt'])
+// Where every window records its last play, in this plugin's own store: one
+// file on disk, read afresh on every get, so all windows share it.
+export const LAST_PLAYED_KEY = 'lastPlayedAt'
 
 // The formats `afplay` plays, by extension, for the `sound` option's file.
 const MIME: Record<string, string> = {
@@ -77,10 +87,30 @@ async function playTag($: EngineInterface) {
   await $.audio.play({ asset: TAG })
 }
 
-async function play($: EngineInterface) {
+// When any window last played; never, when the store can't be read.
+async function sharedLastPlayed($: EngineInterface): Promise<number> {
+  try {
+    const at = await $.store.get(LAST_PLAYED_KEY)
+    return typeof at === 'number' ? at : -Infinity
+  } catch {
+    return -Infinity
+  }
+}
+
+// `relayed`: the alert passes on another window's moment, so a play in any
+// window counts; otherwise only this window's own. A time ahead of now (the
+// clock was set back) counts as never, so a sound is never lost to it.
+async function play($: EngineInterface, relayed = false) {
   const now = await $.clock.now()
-  if (now - lastPlayedAt < COOLDOWN_MS) return
+  const last = relayed ? Math.max(lastPlayedAt, await sharedLastPlayed($)) : lastPlayedAt
+  const since = now - last
+  if (since >= 0 && since < COOLDOWN_MS) return
   lastPlayedAt = now
+  // Recorded before the clip starts, so a relay right after it stays quiet.
+  // A failed write only loses the record, never the sound.
+  try {
+    await $.store.set(LAST_PLAYED_KEY, now)
+  } catch {}
   // Not awaited: the clip never holds up Claude, and a failed play is only a missed sound.
   playTag($).catch(() => {})
 }
@@ -173,7 +203,7 @@ export const register: Register = (on, options) => {
   // Other "needs you" alerts. The 60s idle nudge is not one: Stop already played.
   on('classic.Notification', async ($, e, next) => {
     if (isAnnouncedReminder(e.message, e.notification_type)) heralds.shift()
-    else if (NEEDS_YOU.has(e.notification_type)) await play($)
+    else if (NEEDS_YOU.has(e.notification_type)) await play($, RELAYED.has(e.notification_type))
     return next(e)
   }).catch(($, e, next) => next(e))
 
