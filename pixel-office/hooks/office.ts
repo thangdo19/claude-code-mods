@@ -1,0 +1,255 @@
+// The office's state: changes for each event, and what it looks like at a given moment.
+// Pure: no Claude Code calls, easy to test.
+
+import type { Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
+import { fmtDuration } from './labels'
+
+export const EMPTY: Office = {
+  mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, bg: [],
+  secs: [], todos: null, compacting: false, lastActivity: 0, order: 0,
+}
+
+/** A worker with nothing left to do finishes a coffee, then walks out. */
+export const COFFEE_MS = 15_000
+/** A finished secretary cheers this long, then walks out. */
+export const CHEER_MS = 4_000
+/** A red ✗ stays this long. */
+export const ERROR_MS = 5_000
+/** "Done!" shows this long, then the Manager naps. */
+export const DONE_MS = 8_000
+/** After Esc everyone stands still this long, then walks out. */
+export const STOP_MS = 3_000
+/** Night falls in the window after this long with nothing happening. */
+export const NIGHT_MS = 10 * 60_000
+/** A call running this long was lost (the mod reloaded mid-call): it no longer counts. */
+export const STALE_MS = 10 * 60_000
+/** The most secretaries kept on record. */
+const MAX_SECS = 60
+
+export const ROLES: readonly Role[] = ['archivist', 'typist', 'it', 'courier']
+export const ROLE_NAME: Record<Role, string> = { archivist: 'Archivist', typist: 'Typist', it: 'IT tech', courier: 'Courier' }
+
+/** How a list line or bubble reads: plain, dim, warning, failure, success. */
+export type Tone = '' | 'warn' | 'bad' | 'good' | 'idle'
+
+/** Text made safe for a bubble: ASCII, at most `n` characters, ".." where it was cut. */
+export const ascii = (s: string, n: number): string => {
+  const a = s
+    .replace(/[…]/g, '...')
+    .replace(/[×]/g, 'x')
+    .replace(/[·•]/g, '-')
+    .replace(/[✓✔]/g, 'ok')
+    .replace(/[✗✘]/g, 'x')
+    .replace(/[^\x20-\x7e]/g, '?')
+  return a.length <= n ? a : a.slice(0, Math.max(0, n - 2)) + '..'
+}
+
+/** The list's dot color for each person: the color of their clothes. */
+export const DOT = {
+  manager: '#d7875f', archivist: '#af87d7', typist: '#d787af', it: '#00afaf', courier: '#ff8700', janitor: '#5f87d7', wait: '#8a8a8a',
+  sec: ['#00afaf', '#af87d7', '#ffaf5f', '#5f87d7'],
+} as const
+export const secDot = (n: number): string => DOT.sec[((n % 4) + 4) % 4] ?? DOT.wait
+
+/* ===== changes ===== */
+
+export const setMood = (o: Office, mood: Mood, now: number, text: string | null = null): Office => ({ ...o, mood, moodText: text, moodAt: now, lastActivity: now })
+
+/** A main turn starts: the Manager wakes; finished secretaries and old results are gone. */
+export const startTurn = (o: Office, now: number): Office => ({
+  ...o,
+  turnActive: true,
+  mood: 'think',
+  moodText: null,
+  moodAt: now,
+  lastActivity: now,
+  jobs: [],
+  last: {},
+  secs: o.secs.filter(s => s.status === 'run' || s.status === 'idle'),
+})
+
+/** A main turn ends: answered, stopped with Esc, or failed. */
+export const endTurn = (o: Office, reason: string, aborted: boolean, durationMs: number, now: number): Office => {
+  const mood: Mood = aborted || reason === 'aborted' ? 'stopped' : reason === 'error' ? 'hold' : 'done'
+  const text = mood === 'done' ? 'Done in ' + fmtDuration(durationMs) : mood === 'hold' ? (o.mood === 'hold' ? o.moodText : 'Stopped on an error') : null
+  return { ...o, turnActive: false, jobs: [], compacting: false, mood, moodText: text, moodAt: now, lastActivity: now }
+}
+
+export const startJob = (o: Office, job: Job): Office => ({ ...o, jobs: [...o.jobs.filter(j => j.id !== job.id), job].slice(-40), lastActivity: job.startedAt })
+
+export const endJob = (o: Office, id: string, role: Role, last: LastJob): Office => ({
+  ...o,
+  jobs: o.jobs.filter(j => j.id !== id),
+  last: { ...o.last, [role]: last },
+  lastActivity: last.endedAt,
+})
+
+export const addSec = (o: Office, sec: Omit<Sec, 'order'>): Office => {
+  const prev = o.secs.find(s => s.id === sec.id)
+  const next: Sec = { ...sec, order: prev?.order ?? o.order }
+  return {
+    ...o,
+    order: prev ? o.order : o.order + 1,
+    secs: [...o.secs.filter(s => s.id !== sec.id), next].slice(-MAX_SECS),
+    lastActivity: sec.startedAt,
+  }
+}
+
+export const patchSec = (o: Office, id: string, patch: Partial<Sec>): Office =>
+  o.secs.some(s => s.id === id) ? { ...o, secs: o.secs.map(s => (s.id === id ? { ...s, ...patch } : s)) } : o
+
+/** How an agent's run ended: a teammate waits for its next message instead of finishing. */
+export const endStatus = (reason: string, teammate: boolean): SecStatus =>
+  reason === 'answer' ? (teammate ? 'idle' : 'done') : 'fail'
+
+/** TodoWrite's list. */
+export const todosFrom = (input: Record<string, unknown>): Todo[] | null => {
+  if (!Array.isArray(input.todos)) return null
+  return input.todos.flatMap(t => {
+    const x = t as { content?: unknown; status?: unknown; activeForm?: unknown }
+    const text = typeof x.content === 'string' ? x.content : ''
+    const status = x.status === 'completed' || x.status === 'in_progress' ? x.status : 'pending'
+    return text ? [{ text, status }] : []
+  })
+}
+
+/* ===== what it looks like now ===== */
+
+export type Worker = { role: Role; state: 'work' | 'coffee' | 'error'; short: string; full: string; jobs: string[] }
+export type ShownMood = Mood | 'plan'
+
+export type View = {
+  mood: ShownMood
+  /** The Manager's list line. */
+  line: string
+  tone: Tone
+  /** Esc: nobody moves for a moment. */
+  frozen: boolean
+  night: boolean
+  workers: Partial<Record<Role, Worker>>
+  janitor: boolean
+  /** Secretaries in the office now: working, waiting for a message, or just finished. */
+  secs: Sec[]
+  todos: Todo[] | null
+  bg: string[]
+}
+
+const plural = (n: number, one: string, many: string) => n + ' ' + (n === 1 ? one : many)
+
+export function view(o: Office, now: number): View {
+  const since = now - o.moodAt
+  let mood: ShownMood = o.mood
+  if (mood === 'done' && since > DONE_MS) mood = 'idle'
+  if (mood === 'stopped' && since > STOP_MS) mood = 'idle'
+  if (!o.turnActive && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'idle'
+  if (o.plan && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'plan'
+  const frozen = o.mood === 'stopped' && since <= STOP_MS
+  // A new session has done nothing yet: its 10 minutes start when it does.
+  const night = !o.turnActive && o.lastActivity > 0 && now - o.lastActivity > NIGHT_MS
+
+  const workers: Partial<Record<Role, Worker>> = {}
+  for (const role of ROLES) {
+    const jobs = o.jobs.filter(j => j.role === role && now - j.startedAt < STALE_MS)
+    const last = o.last[role]
+    const newest = jobs[jobs.length - 1]
+    if (newest) {
+      workers[role] = { role, state: 'work', short: jobs.length > 1 ? ascii(newest.short, 10 - (' x' + jobs.length).length) + ' x' + jobs.length : newest.short, full: newest.full, jobs: jobs.map(j => j.full) }
+    } else if (last && (last.err || last.denied) && now - last.endedAt < ERROR_MS) {
+      workers[role] = { role, state: 'error', short: last.denied ? 'No!' : 'Failed', full: (last.denied ? '✗ you said no: ' : '✗ failed: ') + last.full, jobs: [] }
+    } else if (last && (o.turnActive || frozen) && now - last.endedAt < COFFEE_MS) {
+      workers[role] = { role, state: 'coffee', short: '', full: 'done · coffee, then leaving', jobs: [] }
+    }
+  }
+
+  const secs = o.secs.filter(s => s.status === 'run' || s.status === 'idle' || (s.endedAt !== null && now - s.endedAt < CHEER_MS))
+  const running = o.secs.filter(s => s.status === 'run').length
+
+  let line: string
+  let tone: Tone = ''
+  switch (mood) {
+    case 'idle':
+      line = night ? 'Asleep · idle ' + Math.floor((now - o.lastActivity) / 60_000) + 'm' : 'Napping · wakes when you type'
+      tone = 'idle'
+      break
+    case 'think':
+      line = 'Thinking…'
+      break
+    case 'write':
+      line = 'Writing the reply'
+      break
+    case 'work':
+      line = running ? 'Waiting on ' + plural(running, 'agent', 'agents') : Object.keys(workers).length ? 'Handing out work' : 'Working'
+      break
+    case 'plan':
+      line = 'Planning (plan mode)'
+      break
+    case 'permission':
+      line = o.moodText ?? 'Needs your OK'
+      tone = 'warn'
+      break
+    case 'ask':
+      line = o.moodText ?? 'Has a question for you'
+      tone = 'warn'
+      break
+    case 'done':
+      line = o.moodText ?? 'Done'
+      tone = 'good'
+      break
+    case 'stopped':
+      line = 'Stopped by you (Esc)'
+      tone = 'bad'
+      break
+    case 'hold':
+      line = o.moodText ?? 'On hold · API busy'
+      tone = 'bad'
+      break
+  }
+  return { mood, line, tone, frozen, night, workers, janitor: o.compacting, secs, todos: o.todos, bg: o.bg }
+}
+
+/* ===== the list under the office ===== */
+
+export type Line = { dot: string; who: string; what: string; tone: Tone }
+
+const secTone = (s: Sec): Tone => (s.status === 'done' ? 'good' : s.status === 'fail' ? 'bad' : s.status === 'idle' ? 'warn' : '')
+const secWhat = (s: Sec): string =>
+  s.name + ' · ' + (s.status === 'done' ? '✓ done: ' + s.task : s.status === 'fail' ? '✗ stopped: ' + s.task : s.status === 'idle' ? 'waiting for a message' : s.full)
+
+/**
+ * One line per person, busiest first: the Manager, the workers, the janitor, the
+ * secretaries at desks, the line at the door, the to-do list. `seated` is the
+ * secretaries at desks in desk order; without it the first four are.
+ */
+export function lines(v: View, seated?: readonly string[]): Line[] {
+  const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone }]
+  const order: Record<Worker['state'], number> = { work: 0, error: 1, coffee: 2 }
+  const ws = ROLES.flatMap(r => (v.workers[r] ? [v.workers[r]!] : [])).sort((a, b) => order[a.state] - order[b.state])
+  for (const w of ws) {
+    if (w.state === 'work' && w.jobs.length > 1) {
+      out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.jobs.length + ' at once', tone: '' })
+      w.jobs.slice(0, 3).forEach(j => out.push({ dot: '', who: '', what: '└ ' + j, tone: '' }))
+      if (w.jobs.length > 3) out.push({ dot: '', who: '', what: '└ +' + (w.jobs.length - 3) + ' more', tone: 'idle' })
+    } else out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'coffee' ? 'idle' : '' })
+  }
+  if (v.bg.length) out.push({ dot: v.workers.it ? '' : DOT.it, who: v.workers.it ? '' : 'IT tech', what: plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle' })
+  if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '' })
+  const atDesk = seated ? v.secs.filter(s => seated.includes(s.id)) : v.secs.slice(0, 4)
+  const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : atDesk.indexOf(s))
+  for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b))) out.push({ dot: secDot(s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s) })
+  const waiting = v.secs.length - atDesk.length
+  if (waiting > 0) out.push({ dot: DOT.wait, who: 'In line', what: plural(waiting, 'agent waits', 'agents wait') + ' for a free desk', tone: 'warn' })
+  if (v.todos && v.todos.length) {
+    const done = v.todos.filter(t => t.status === 'completed').length
+    const now = v.todos.find(t => t.status === 'in_progress')
+    out.push({ dot: '', who: 'To-do', what: done + '/' + v.todos.length + (now ? ' · ' + now.text : ''), tone: 'idle' })
+  }
+  return out
+}
+
+/** Lines cut to `max`, the last one saying how many were left out. */
+export function fitLines(all: Line[], max: number): Line[] {
+  if (max <= 0) return []
+  if (all.length <= max) return all
+  const kept = all.slice(0, Math.max(0, max - 1))
+  return [...kept, { dot: '', who: '', what: '+' + (all.length - kept.length) + ' more', tone: 'idle' }]
+}
