@@ -12,7 +12,7 @@ import { LINGER_MS, MIN_SHOW, ROLE_NAME, ROLES, type View } from './office'
 export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'
 export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'stretch' | 'report' | 'tick' | 'own' | 'huddle'
 /** Someone with a life: a role, or 'manager'. */
-type Who = Role | 'manager'
+export type Who = Role | 'manager'
 type Act = { kind: ActKind; spot: string; until: number; partner?: Who }
 
 export const HOME: Record<Who, string> = {

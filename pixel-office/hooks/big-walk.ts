@@ -5,6 +5,7 @@
 import type { Role } from '../types'
 import { ROLES, SEC_LOOKS, type View } from './office'
 import { Life } from './life'
+import type { Face } from './big-sprites'
 
 export type Pt = readonly [number, number]
 /** A place to stand (x: the sprite's left edge, feet: its bottom row), reached from `at` on a hallway via `tail`. */
@@ -116,6 +117,18 @@ export function pointAt(r: readonly Pt[], t: number): { x: number; y: number } {
   }
   const e = r[r.length - 1] ?? DOOR
   return { x: e[0], y: e[1] }
+}
+
+/** Which way the route at `t` goes (at a corner, the way on): where someone walking it faces. */
+export function dirAt(r: readonly Pt[], t: number): Face {
+  for (let i = 1; i < r.length; i++) {
+    const [ax, ay] = r[i - 1]!
+    const [bx, by] = r[i]!
+    const len = Math.abs(bx - ax) + Math.abs(by - ay)
+    if (len && t < len) return Math.abs(bx - ax) >= Math.abs(by - ay) ? (bx > ax ? 'right' : 'left') : by > ay ? 'down' : 'up'
+    t -= len
+  }
+  return 'down'
 }
 
 /* ===== the hallway map ===== */
@@ -230,6 +243,8 @@ export type Actor = {
   leaving: boolean
   /** The tick of arrival at `dest`, or -1 while on the way. */
   arrivedAt: number
+  /** Ticks spent walking (kept across a change of way, so the steps run on), for the walk step. */
+  walked: number
 }
 
 /** Walking speeds, pixels a tick (8 ticks a second). A calm stroll (approved "Calm"): 1.5. */
@@ -262,7 +277,7 @@ export class BigSim {
     const speed = o.hurry ? hurry(length) : (o.speed ?? STROLL)
     const delay = o.delay ?? 0
     if (!a) {
-      a = { id, dest, route, length, t: 0, speed, delay, leaving: !!o.leaving, arrivedAt: -1 }
+      a = { id, dest, route, length, t: 0, speed, delay, leaving: !!o.leaving, arrivedAt: -1, walked: 0 }
       this.actors.set(id, a)
     } else Object.assign(a, { dest, route, length, t: 0, speed, delay, leaving: !!o.leaving, arrivedAt: -1 })
     if (length === 0 && a.delay === 0) a.arrivedAt = this.tick
@@ -273,6 +288,11 @@ export class BigSim {
   at(a: Actor): Pt {
     const p = pointAt(a.route, a.t)
     return [p.x, p.y]
+  }
+
+  /** Which way `a` faces: where they walk; at rest, the front. */
+  facing(a: Actor): Face {
+    return a.t < a.length ? dirAt(a.route, a.t) : 'down'
   }
 
   here(id: string, dest?: string): boolean {
@@ -372,6 +392,7 @@ export class BigSim {
       }
       if (a.t < a.length) {
         a.t = Math.min(a.length, a.t + a.speed)
+        a.walked++
         if (a.t === a.length) a.arrivedAt = this.tick
       } else if (a.arrivedAt < 0) a.arrivedAt = this.tick
       if (a.leaving && a.arrivedAt >= 0) this.remove(a.id)
