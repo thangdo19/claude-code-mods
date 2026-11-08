@@ -8,7 +8,10 @@ import { Calm, CALM_HOLD } from '../hooks/calm'
 import { describe as label, mask } from '../hooks/labels'
 import { Camera, CAM_COLS, CAM_ROWS, focusOf } from '../hooks/camera'
 import { REPORT_AFTER } from '../hooks/life'
-import { addSec, BRIEF_MS, DONE_MS, DOT, EMPTY, endJob, endTurn, LINGER_MS, lines, NIGHT_MS, setMood, startJob, startTurn, STOP_MS, view, type View } from '../hooks/office'
+import {
+  addSec, addTask, ascii, BRIEF_MS, DONE_MS, DOT, EMPTY, endJob, endTurn, fitRows, LINGER_MS, lines, NIGHT_MS, patchTask, setMood, startJob, startTurn, STOP_MS, tasksFrom,
+  textWidth, view, WHO_W, wrapLine, type Line, type View,
+} from '../hooks/office'
 import type { Office } from '../types'
 
 // The test environment has timers; its type declarations name none.
@@ -232,7 +235,7 @@ test('plan mode: the Manager calls everyone free to the board', async () => {
   run(sim, o, 2, 200)
   expect(sim.here('manager', 'board')).toBe(true)
   expect(sim.here('typist', 'meet3')).toBe(true)
-  expect(sim.breakLine(view(o, 30_000))?.who).toBe('Meeting')
+  expect(sim.breakLine(view(o, 30_000))).toEqual({ who: 'Meeting', what: 'Everyone at the board' })
 })
 
 test('between turns the Manager is on a break; at night the Manager naps at the desk', async () => {
@@ -401,4 +404,120 @@ test('the camera looks where things happen, glides there a row at a time, and sh
   const shot = c.view(full, 40, 32)
   for (let y = 0; y < 32; y++) for (let x = 0; x < 40; x++) expect(shot.fb.p[y * 40 + x]).toBe(full.fb.p[(y + c.top) * 64 + x + c.left]!)
   expect(bigCells(shot).rows).toBe(16)
+})
+
+test('the list keeps its name column; long lines wrap under the words, whole lines fit the rows', async () => {
+  const L = (who: string, what: string): Line => ({ dot: '#fff', who, what, tone: '' })
+  const all = [
+    L('Manager', 'Planning (plan mode)'),
+    L('Archivist', 'Read src/components/settings/NotificationPreferencesPanel.tsx'),
+    L('Break', 'Manager & Typist chatting · Archivist having a coffee · IT tech watering the plant · Courier on the phone · Researcher reading'),
+  ]
+  const rows = fitRows(all, 64, 10)
+  expect(rows.map(r => r.who)).toEqual(['Manager', 'Archivist', '', 'Break', '', ''])
+  // A path breaks after a "/", never inside a name; no row is wider than the room beside the names.
+  expect(rows[1]!.what).toBe('Read src/components/settings/')
+  expect(rows[2]!.what).toBe('NotificationPreferencesPanel.tsx')
+  for (const r of rows) expect(textWidth(r.what)).toBeLessThanOrEqual(64 - 2 - WHO_W)
+  // Too few rows: only whole lines, and the last row says how many were left out.
+  expect(fitRows(all, 64, 4).map(r => r.what)).toEqual(['Planning (plan mode)', 'Read src/components/settings/', 'NotificationPreferencesPanel.tsx', '+1 more'])
+  // Very long: three rows at most, the last ending with an ellipsis.
+  const long = wrapLine(L('Desks', 'word '.repeat(80)), 40)
+  expect(long.length).toBe(3)
+  expect(long[2]!.what.endsWith('…')).toBe(true)
+})
+
+test('the task tools and accents: the board gets the tasks, a name keeps its letters', async () => {
+  let t = addTask(addTask(null, '1', 'Find the bug'), '2', 'Fix it')
+  t = patchTask(t, '1', { status: 'completed' })!
+  expect(t.map(x => x.status)).toEqual(['completed', 'pending'])
+  expect(patchTask(t, '2', { status: 'deleted' })!.map(x => x.text)).toEqual(['Find the bug'])
+  expect(patchTask(t, '9', { status: 'completed' })).toBe(t)
+  expect(tasksFrom({ tasks: [{ id: '1', subject: 'A', status: 'in_progress', blockedBy: [] }] })).toEqual([{ id: '1', text: 'A', status: 'in_progress' }])
+  expect(ascii('báo-cáo.md', 20)).toBe('bao-cao.md')
+})
+
+test('a created and finished task shows on the board through the hooks', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  mock.store(on)
+  on('command.register', () => ({ value: { command: 'office' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.call', (_, e) => {
+    if (e.tool === 'TaskCreate') return { result: { task: { id: '7', subject: 'Find the bug' } } }
+    return { result: { success: true, taskId: '7', updatedFields: ['status'] } }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Find the bug', description: 'x' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '7', status: 'completed' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^1\/1/ }))?.text).toBe('1/1')
+  await ui.unmount()
+})
+
+/** A turn whose to-do list has its first `k` lines done. */
+const todoTurn = (k: number): Office => ({
+  ...startTurn({ ...EMPTY, lastActivity: 1 }, 1),
+  mood: 'work',
+  todos: ['Find the bug', 'Fix it', 'Run the tests'].map((text, i) => ({ text, status: i < k ? 'completed' : i === k ? 'in_progress' : 'pending' })),
+})
+
+test('the board shows the to-do words; the Manager walks over and ticks each done line once', async () => {
+  const sim = new BigSim()
+  run(sim, todoTurn(0), 2, 20)
+  expect(sim.life.pending).toEqual([])
+  run(sim, todoTurn(1), 5_000, 2)
+  expect(sim.life.pending).toEqual(['Find the bug'])
+  // Not ticked until the Manager is at the board.
+  expect(sim.life.ticked.has('Find the bug')).toBe(false)
+  let visits = 0
+  for (let i = 0; i < 120; i++) {
+    const was = sim.here('manager', 'board')
+    run(sim, todoTurn(1), 5_250 + i * 125, 1)
+    if (!was && sim.here('manager', 'board')) visits++
+  }
+  expect(visits).toBe(1)
+  expect(sim.life.ticked.has('Find the bug')).toBe(true)
+  expect(sim.actors.get('manager')!.dest).toBe('chair')
+  const sc = renderBig(view(todoTurn(1), 20_000), sim, 1, 2)
+  const row = (r: number) => sc.texts.filter(t => t.row === r && t.x >= 32 && t.x <= 45).map(t => t.ch).join('')
+  expect(row(2)).toContain('v Find the bug')
+  expect(row(3)).toContain('> Fix it')
+  // A reload: what is done counts as ticked; nobody walks over again.
+  const fresh = new BigSim()
+  run(fresh, todoTurn(2), 30_000, 40)
+  expect(fresh.life.pending).toEqual([])
+  expect(fresh.here('manager', 'board')).toBe(false)
+})
+
+test('compacting: staff and the Manager step out, a busy agent keeps its desk, the Janitor sweeps the office', async () => {
+  const sim = new BigSim()
+  let o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  o = sec(sec(o, 'a', 1), 'b', 1, 'idle')
+  run(sim, o, 2, 200)
+  expect(sim.seated().filter(Boolean).sort()).toEqual(['a', 'b'])
+  const clean = { ...o, compacting: true }
+  expect(view(clean, 30_000).line).toBe('Stepped out while the Janitor cleans')
+  const stops = new Set<string>()
+  for (let i = 0; i < 480; i++) {
+    run(sim, clean, 30_000 + i * 125, 1)
+    stops.add(sim.actors.get('janitor')?.dest ?? '')
+  }
+  expect([...sim.actors.keys()].sort()).toEqual(['janitor', 'sec:a'])
+  expect([...stops].filter(d => d.startsWith('sweep')).length).toBeGreaterThanOrEqual(6)
+  expect(sim.breakLine(view(clean, 90_000))?.who).toBe('Out')
+  // Done: everyone back, the waiting teammate gets a desk again; the Janitor is gone.
+  run(sim, o, 90_000, 400)
+  expect([...sim.actors.keys()].sort()).toEqual(['archivist', 'courier', 'it', 'librarian', 'manager', 'planner', 'researcher', 'sec:a', 'sec:b', 'typist'])
+  expect(sim.here('manager', 'chair')).toBe(true)
+})
+
+test('the IT girl at work: her bubble stays clear of the to-do words on the board', async () => {
+  const o = startJob(todoTurn(1), { id: 'b', role: 'it', short: 'npm test', full: '$ npm test', startedAt: 1 })
+  const sim = new BigSim()
+  run(sim, o, 2, 40)
+  const sc = renderBig(view(o, 5_000), sim, 1, 2)
+  expect(sc.texts.some(t => t.ch === 'n' && t.row === 2 && t.x >= 48)).toBe(true)
+  // The board's first two lines are whole: nothing covers them.
+  for (const r of [2, 3]) expect(sc.texts.filter(t => t.row === r && t.x >= 32 && t.x <= 45).length).toBe(14)
 })

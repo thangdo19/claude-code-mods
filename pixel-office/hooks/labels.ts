@@ -33,6 +33,9 @@ export const fit = (s: string, n: number): string => {
 
 export const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
 
+/** Accents off ("báo-cáo" → "bao-cao"), so a word keeps its letters where only ASCII is drawn. */
+export const plain = (s: string): string => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D')
+
 export const basename = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
 
 /** A path relative to the project, or with the home folder as ~. */

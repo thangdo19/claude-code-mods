@@ -36,7 +36,6 @@ export const SPOTS: Record<string, Spot> = {
   it: spot([44, 21]),
   courier: spot([3, 42], [], true),
   typist: spot([51, 42], [], true),
-  janitor: spot([30, 48]),
   desk0: desk(0),
   desk1: desk(1),
   desk2: desk(2),
@@ -68,6 +67,17 @@ export const SPOTS: Record<string, Spot> = {
   supIt: spot([37, 21]),
   supCourier: spot([16, 42]),
   supTypist: spot([43, 42]),
+  // The Janitor's round while compacting: a stop in each part of the office, along the hallways.
+  sweep0: spot([12, 21]),
+  sweep1: spot([30, 21]),
+  sweep2: spot([50, 21]),
+  sweep3: spot([43, 30]),
+  sweep4: spot([43, 44]),
+  sweep5: spot([55, 48]),
+  sweep6: spot([30, 48]),
+  sweep7: spot([5, 48]),
+  sweep8: spot([16, 44]),
+  sweep9: spot([16, 28]),
   // Right behind an agent's chair, clear of the next desks' bubbles.
   patrol0: spot([5, 48]),
   patrol1: spot([21, 48]),
@@ -78,6 +88,10 @@ export const SPOTS: Record<string, Spot> = {
   rep1: spot([43, 40]),
 }
 export const DESKS = 4
+/** The Janitor's stops (sweep0..), visited in turn. */
+export const SWEEPS = 10
+/** The Janitor sweeps slowly: pixels a tick. */
+const SWEEP_SPEED = 1
 /** Who owns each front desk; the last one is kept free for agents. An agent may borrow an owner's desk while they have no job. */
 export const DESK_OWNER: readonly (Role | null)[] = ['researcher', 'planner', 'librarian', null]
 /** The order agents take desks: the free one first, then the staff's, from the right. */
@@ -217,8 +231,8 @@ export type Actor = {
   arrivedAt: number
 }
 
-/** Walking speeds, pixels a tick (8 ticks a second). */
-export const STROLL = 2
+/** Walking speeds, pixels a tick (8 ticks a second). A calm stroll (approved "Calm"): 1.5. */
+export const STROLL = 1.5
 const hurry = (len: number) => Math.max(3, Math.ceil(len / 8))
 const STAGGER = 4
 
@@ -294,7 +308,13 @@ export class BigSim {
       if (!a || a.leaving) return bring(key, dest)
       this.goTo(key, dest, { speed: Math.max(STROLL, Math.ceil(routeLength(routeTo(this.at(a), dest)) / 16)) })
     }
-    const secs = [...v.secs].sort((a, b) => a.order - b.order).map(s => ({ id: s.id, working: s.status === 'run' }))
+    // The Janitor cleans (compacting): agents at a desk in the middle of a job keep working; the rest step out
+    // (waiting teammates, the line at the door) and come back after. No desk changes hands meanwhile.
+    const out = v.janitor
+    const secs = [...v.secs]
+      .sort((a, b) => a.order - b.order)
+      .map(s => ({ id: s.id, working: s.status === 'run' }))
+      .filter(s => !out || (s.working && this.desks.includes(s.id)))
     const wanted = new Map(secs.map(s => [s.id, s]))
     for (let i = 0; i < DESKS; i++) {
       const id = this.desks[i]
@@ -318,7 +338,7 @@ export class BigSim {
     line = [...line].sort((a, b) => Number(b.working) - Number(a.working))
     // After Esc nobody moves, so no desk changes hands then (its owner couldn't step away).
     for (const i of AGENT_DESKS) {
-      if (!line.length || v.frozen) break
+      if (!line.length || v.frozen || out) break
       const owner = DESK_OWNER[i]
       if (this.desks[i] !== null || (owner && v.workers[owner])) continue
       this.desks[i] = line.shift()!.id
@@ -329,11 +349,11 @@ export class BigSim {
     }
     this.queue = line.length + [...this.leaving].filter(id => wanted.has(id)).length
     // The line at the door: the first three in line stand there themselves; anyone else there walks out.
-    const front = line.slice(0, 3)
+    const front = out ? [] : line.slice(0, 3)
     front.forEach((s, k) => place(s.id, 'wait' + k))
     const inLine = new Set(front.map(s => 'sec:' + s.id))
     for (const a of [...this.actors.values()]) if (a.dest.startsWith('wait') && !inLine.has(a.id)) send(a.id)
-    if (v.janitor) bring('janitor', 'janitor')
+    if (v.janitor) bring('janitor', 'sweep0')
     else send('janitor')
     this.life.sync(this, v, instant)
   }
@@ -343,6 +363,7 @@ export class BigSim {
     if (v.frozen) return
     this.tick++
     this.life.step(this, v)
+    this.sweep(v)
     for (const a of [...this.actors.values()]) {
       if (a.delay > 0) {
         a.delay--
@@ -354,6 +375,16 @@ export class BigSim {
       } else if (a.arrivedAt < 0) a.arrivedAt = this.tick
       if (a.leaving && a.arrivedAt >= 0) this.remove(a.id)
     }
+  }
+
+  /** The Janitor's round: a stop at each part of the office, sweeping a moment, then on to the next. */
+  private sweep(v: View): void {
+    const a = this.actors.get('janitor')
+    if (!v.janitor || !a || a.leaving || !a.dest.startsWith('sweep') || a.arrivedAt < 0) return
+    const at = Number(a.dest.slice(5))
+    // 1.25 to 2.6 s at each stop, by stop (no dice: the same round every time).
+    if (this.tick - a.arrivedAt < 10 + ((at * 7) % 12)) return
+    this.goTo('janitor', 'sweep' + ((at + 1) % SWEEPS), { speed: SWEEP_SPEED })
   }
 
   remove(id: string): void {

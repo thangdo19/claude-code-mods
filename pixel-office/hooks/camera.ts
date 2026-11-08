@@ -31,6 +31,12 @@ export function focusOf(v: View, sim?: BigSim): { top: number; center: number } 
   if (v.planning && ['plan', 'permission', 'ask'].includes(v.mood)) return { top: BACK, center: 38 }
   // The Manager needs you or just finished: look at the Manager.
   if (['permission', 'ask', 'done', 'stopped', 'hold'].includes(v.mood)) return { top: MIDDLE, center: 32 }
+  // Compacting: follow the Janitor's round (everyone else stepped out).
+  const j = v.janitor ? sim?.actors.get('janitor') : undefined
+  if (sim && j) {
+    const [x, y] = sim.at(j)
+    return { top: partOf(y), center: x + 3 }
+  }
   if (v.secs.some(s => s.status === 'run') || (['researcher', 'planner', 'librarian'] as const).some(r => v.workers[r]?.state === 'work')) return { top: FRONT, center: 32 }
   if (busy('archivist') || busy('it')) return { top: BACK, center: busy('archivist') && !busy('it') ? 22 : busy('it') && !busy('archivist') ? 46 : 34 }
   // Plan mode: the Manager walks to the board.
