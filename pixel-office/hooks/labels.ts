@@ -9,16 +9,22 @@ export type Who = Role | 'manager'
 const ARCHIVE = new Set(['Read', 'Grep', 'Glob', 'LSP', 'NotebookRead'])
 const TYPE = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const IT = new Set(['Bash', 'PowerShell', 'BashOutput', 'KillShell', 'KillBash', 'Monitor', 'TaskOutput', 'TaskStop'])
-// Planning, asking, delegating and bookkeeping: the Manager does these at the desk.
+/** The web: the Researcher at the first front desk. */
+const RESEARCH = new Set(['WebSearch', 'WebFetch'])
+/** The to-do list, tasks and schedules: the Planner. */
+const PLAN = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList'])
+/** Looking up skills and tools: the Librarian. */
+const LIBRARY = new Set(['Skill', 'ToolSearch'])
+// Asking, planning and delegating: the Manager does these at the desk.
 const MANAGER = new Set([
-  'Agent', 'Task', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion',
-  'EnterPlanMode', 'ExitPlanMode', 'Skill', 'ToolSearch', 'SendMessage', 'ListAgents', 'ReadNotifications',
-  'ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'EnterWorktree', 'ExitWorktree', 'Sleep',
+  'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'ListAgents', 'ReadNotifications',
+  'EnterWorktree', 'ExitWorktree', 'Sleep',
 ])
 
-/** Everything else (web, MCP, a tool it doesn't know) goes outside: the Courier. */
+/** Everything else (MCP, a tool it doesn't know) goes outside: the Courier. */
 export const whoFor = (tool: string): Who =>
-  ARCHIVE.has(tool) ? 'archivist' : TYPE.has(tool) ? 'typist' : IT.has(tool) ? 'it' : MANAGER.has(tool) ? 'manager' : 'courier'
+  ARCHIVE.has(tool) ? 'archivist' : TYPE.has(tool) ? 'typist' : IT.has(tool) ? 'it' : RESEARCH.has(tool) ? 'researcher'
+    : PLAN.has(tool) ? 'planner' : LIBRARY.has(tool) ? 'librarian' : MANAGER.has(tool) ? 'manager' : 'courier'
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
@@ -106,6 +112,28 @@ export function describe(tool: string, input: Record<string, unknown>, cwd?: str
     case 'WebFetch': {
       const url = mask(str(input.url))
       return { who, short: host(url), full: 'Fetch ' + url }
+    }
+    case 'TodoWrite':
+      return { who, short: 'to-dos', full: 'Update the to-do list' }
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskList':
+    case 'TaskGet': {
+      const s = oneLine(str(input.subject) || str(input.title))
+      return { who, short: 'tasks', full: (tool === 'TaskCreate' ? 'New task' : tool === 'TaskUpdate' ? 'Update a task' : 'Check the tasks') + (s ? ': ' + s : '') }
+    }
+    case 'ScheduleWakeup':
+    case 'CronCreate':
+    case 'CronDelete':
+    case 'CronList':
+      return { who, short: 'schedule', full: tool === 'CronList' ? 'Check the schedule' : tool === 'CronDelete' ? 'Cancel a check-in' : 'Schedule a check-in' }
+    case 'Skill': {
+      const name = oneLine(str(input.skill))
+      return { who, short: basename(name) || 'skill', full: 'Look up skill ' + (name || '?') }
+    }
+    case 'ToolSearch': {
+      const q = oneLine(str(input.query)).replace(/^select:/, '')
+      return { who, short: 'tools', full: 'Look up tools: ' + q }
     }
   }
   if (tool.startsWith('mcp__')) {

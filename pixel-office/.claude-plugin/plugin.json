@@ -1,7 +1,7 @@
 {
   "name": "pixel-office",
-  "version": "0.1.0",
-  "description": "A small pixel office in the right panel: Claude is the Manager, helpers walk in when work arrives, and a list says who does what.",
+  "version": "0.2.0",
+  "description": "A lively pixel office in the right panel: Claude is the Manager, seven staff take the tool calls and have breaks in between, agents sit at the front desks, and a list says who does what.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "thangdo19"

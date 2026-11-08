@@ -1,37 +1,84 @@
-// Who stands where in the big office: people walk in through the front door to
-// their spot and back out along the hallway. Pure; the module keeps one BigSim,
-// which a reload starts over with everyone already at their spot.
+// Who stands where in the big office and how they get there: along the hallways,
+// never through a desk. Pure; the module keeps one BigSim, which a reload starts
+// over with everyone already in place.
+
+import type { Role } from '../types'
+import { ROLES, type View } from './office'
+import { Life } from './life'
 
 export type Pt = readonly [number, number]
-export type Row = 'back' | 'mid' | 'front' | 'aisle'
-export type Spot = { x: number; feet: number; row: Row; seat: boolean; route: readonly Pt[] }
+/** A place to stand (x: the sprite's left edge, feet: its bottom row), reached from `at` on a hallway via `tail`. */
+export type Spot = { x: number; feet: number; seat: boolean; at: Pt; tail: readonly Pt[] }
 
 /** Where everyone comes in: the front door, back left. */
 export const DOOR: Pt = [3, 21]
-// Hallways: along the back wall (y 21), down the left aisle (x 16), down the right aisle (x 43),
-// and across the front (y 48). Desks hide the legs of whoever walks behind them.
-const back = (x: number): Spot => ({ x, feet: 21, row: 'back', seat: false, route: [[x, 21]] })
-const desk = (i: number): Spot => {
-  const x = i * 16 + 2
-  return { x, feet: 58, row: 'front', seat: true, route: [[16, 21], [16, 48], [x, 48], [x, 58]] }
+
+/** Hallways. `boss`: only the Manager walks there (behind the Manager's own desk). */
+const LANES: { a: Pt; b: Pt; boss?: boolean }[] = [
+  { a: [3, 21], b: [57, 21] }, // along the back wall
+  { a: [16, 21], b: [16, 48] }, // left aisle
+  { a: [43, 21], b: [43, 48] }, // right aisle
+  { a: [2, 48], b: [57, 48] }, // across the front, behind the agents' chairs
+  { a: [3, 42], b: [16, 42] }, // behind the Courier's desk
+  { a: [43, 42], b: [51, 42] }, // behind the Typist's desk
+  { a: [16, 42], b: [43, 42], boss: true }, // behind the Manager's desk
+]
+
+const spot = (at: Pt, tail: Pt[] = [], seat = false): Spot => {
+  const e = tail[tail.length - 1] ?? at
+  return { x: e[0], feet: e[1], seat, at, tail }
 }
+const desk = (i: number): Spot => spot([i * 16 + 2, 48], [[i * 16 + 2, 58]], true)
+
 export const SPOTS: Record<string, Spot> = {
-  archivist: back(24),
-  it: back(44),
-  courier: { x: 3, feet: 42, row: 'mid', seat: true, route: [[16, 21], [16, 42], [3, 42]] },
-  typist: { x: 51, feet: 42, row: 'mid', seat: true, route: [[43, 21], [43, 42], [51, 42]] },
-  janitor: { x: 30, feet: 48, row: 'aisle', seat: false, route: [[16, 21], [16, 48], [30, 48]] },
+  door: spot(DOOR),
+  archivist: spot([24, 21]),
+  it: spot([44, 21]),
+  courier: spot([3, 42], [], true),
+  typist: spot([51, 42], [], true),
+  janitor: spot([30, 48]),
   desk0: desk(0),
   desk1: desk(1),
   desk2: desk(2),
   desk3: desk(3),
-  wait0: back(13),
-  wait1: back(9),
-  wait2: back(3),
+  wait0: spot([13, 21]),
+  wait1: spot([9, 21]),
+  wait2: spot([3, 21]),
+  // A break: the coffee machine under the window, the water cooler by the door, the plant.
+  coffee: spot([51, 21]),
+  chatA: spot([3, 21], [[3, 26]]),
+  chatB: spot([17, 21], [[17, 26]]),
+  chatC: spot([32, 21], [[32, 25]]),
+  chatD: spot([39, 21], [[39, 25]]),
+  plant: spot([43, 36], [[44, 36]]),
+  visitCourier: spot([16, 42]),
+  visitTypist: spot([43, 42]),
+  // Plan mode: the meeting in front of the board.
+  meet0: spot([23, 21], [[23, 22]]),
+  meet1: spot([46, 21], [[46, 22]]),
+  meet2: spot([30, 21], [[30, 28]]),
+  meet3: spot([43, 28], [[42, 28]]),
+  meet4: spot([18, 21], [[18, 27]]),
+  meet5: spot([50, 21], [[50, 27]]),
+  meet6: spot([43, 32], [[36, 32]]),
+  // The Manager.
+  chair: spot([29, 42], [], true),
+  board: spot([36, 21]),
+  supArchivist: spot([31, 21]),
+  supIt: spot([37, 21]),
+  supCourier: spot([16, 42]),
+  supTypist: spot([43, 42]),
+  // Right behind an agent's chair, clear of the next desks' bubbles.
+  patrol0: spot([5, 48]),
+  patrol1: spot([21, 48]),
+  patrol2: spot([37, 48]),
+  patrol3: spot([53, 48]),
 }
 export const DESKS = 4
-/** The Manager's walk from the chair to the board, for plan mode. */
-export const MANAGER_ROUTE: readonly Pt[] = [[29, 42], [43, 42], [43, 21], [36, 21]]
+/** Who owns each front desk; the last one is kept free for agents. An agent may borrow an owner's desk while they have no job. */
+export const DESK_OWNER: readonly (Role | null)[] = ['researcher', 'planner', 'librarian', null]
+/** The order agents take desks: the free one first, then the staff's, from the right. */
+const AGENT_DESKS = [3, 2, 1, 0]
 
 export const routeLength = (r: readonly Pt[]): number => {
   let n = 0
@@ -53,45 +100,184 @@ export function pointAt(r: readonly Pt[], t: number): { x: number; y: number } {
   return { x: e[0], y: e[1] }
 }
 
-export type Actor = { id: string; spot: string; route: readonly Pt[]; length: number; t: number; goal: 'in' | 'out'; delay: number; speed: number }
-export type Want = { staff: readonly string[]; secs: readonly { id: string; working: boolean }[]; plan: boolean }
+/* ===== the hallway map ===== */
 
+const key = (p: Pt) => p[0] + ',' + p[1]
+const onSeg = (p: Pt, a: Pt, b: Pt) =>
+  (a[0] === b[0] && p[0] === a[0] && p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1])) ||
+  (a[1] === b[1] && p[1] === a[1] && p[0] >= Math.min(a[0], b[0]) && p[0] <= Math.max(a[0], b[0]))
+
+type Graph = { pts: Map<string, Pt>; next: Map<string, Map<string, number>>; edges: [Pt, Pt][] }
+
+function buildGraph(boss: boolean): Graph {
+  const pts = new Map<string, Pt>()
+  const add = (p: Pt) => pts.set(key(p), p)
+  const lanes = LANES.filter(l => boss || !l.boss)
+  for (const l of lanes) {
+    add(l.a)
+    add(l.b)
+  }
+  for (const s of Object.values(SPOTS)) {
+    add(s.at)
+    s.tail.forEach(add)
+  }
+  // Where two hallways cross.
+  for (const l of lanes)
+    for (const m of lanes) {
+      if (l.a[0] === l.b[0] && m.a[1] === m.b[1]) {
+        const p: Pt = [l.a[0], m.a[1]]
+        if (onSeg(p, l.a, l.b) && onSeg(p, m.a, m.b)) add(p)
+      }
+    }
+  const next = new Map<string, Map<string, number>>()
+  const edges: [Pt, Pt][] = []
+  const link = (a: Pt, b: Pt) => {
+    const d = Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1])
+    if (!d) return
+    if (!next.has(key(a))) next.set(key(a), new Map())
+    if (!next.has(key(b))) next.set(key(b), new Map())
+    next.get(key(a))!.set(key(b), d)
+    next.get(key(b))!.set(key(a), d)
+    edges.push([a, b])
+  }
+  for (const l of lanes) {
+    const on = [...pts.values()].filter(p => onSeg(p, l.a, l.b)).sort((p, q) => p[0] - q[0] || p[1] - q[1])
+    for (let i = 1; i < on.length; i++) link(on[i - 1]!, on[i]!)
+  }
+  for (const s of Object.values(SPOTS)) {
+    let prev = s.at
+    for (const t of s.tail) {
+      link(prev, t)
+      prev = t
+    }
+  }
+  return { pts, next, edges }
+}
+
+const GRAPHS = { staff: buildGraph(false), boss: buildGraph(true) }
+
+/** The shortest walk from `from` (any point on a hallway or a spot's tail) to the spot `to`. */
+export function routeTo(from: Pt, to: string, boss = false): Pt[] {
+  const g = boss ? GRAPHS.boss : GRAPHS.staff
+  const s = SPOTS[to]
+  if (!s) return [from]
+  const goal = key([s.x, s.feet])
+  const start = key(from)
+  // A point between two corners: it joins both ends of its piece of hallway.
+  const extra = new Map<string, number>()
+  if (!g.pts.has(start)) {
+    const e = g.edges.find(([a, b]) => onSeg(from, a, b))
+    if (!e) return [from, [s.x, s.feet]]
+    for (const p of e) extra.set(key(p), Math.abs(p[0] - from[0]) + Math.abs(p[1] - from[1]))
+  }
+  const dist = new Map<string, number>([[start, 0]])
+  const prev = new Map<string, string>()
+  const todo = new Set<string>([start])
+  while (todo.size) {
+    let u = ''
+    let best = Infinity
+    for (const k of todo) if ((dist.get(k) ?? Infinity) < best) [u, best] = [k, dist.get(k)!]
+    todo.delete(u)
+    if (u === goal) break
+    const nb = u === start && extra.size ? extra : (g.next.get(u) ?? new Map<string, number>())
+    for (const [v, d] of nb) {
+      const nd = best + d
+      if (nd < (dist.get(v) ?? Infinity)) {
+        dist.set(v, nd)
+        prev.set(v, u)
+        todo.add(v)
+      }
+    }
+  }
+  if (!dist.has(goal)) return [from, [s.x, s.feet]]
+  const out: Pt[] = []
+  for (let k: string | undefined = goal; k !== undefined; k = prev.get(k)) out.unshift(k === start ? from : g.pts.get(k)!)
+  return out
+}
+
+/* ===== people ===== */
+
+export type Actor = {
+  /** 'manager', a role, 'janitor', 'sec:<agentId>' or 'wait0'..'wait2'. */
+  id: string
+  /** The spot walked to. */
+  dest: string
+  route: readonly Pt[]
+  length: number
+  t: number
+  speed: number
+  /** Ticks to wait before setting off (people come in one after another). */
+  delay: number
+  /** Walking out: gone at the door. */
+  leaving: boolean
+  /** The tick of arrival at `dest`, or -1 while on the way. */
+  arrivedAt: number
+}
+
+/** Walking speeds, pixels a tick (8 ticks a second). */
+export const STROLL = 2
+const hurry = (len: number) => Math.max(3, Math.ceil(len / 8))
 const STAGGER = 4
-const TRIP_TICKS = 16
 
 export class BigSim {
   readonly actors = new Map<string, Actor>()
   readonly desks: (string | null)[] = Array(DESKS).fill(null)
   queue = 0
-  managerT = 0
-  managerGoal: 'seat' | 'board' = 'seat'
+  tick = 0
+  readonly life = new Life()
   private ready = false
   private readonly leaving = new Set<string>()
 
-  sync(w: Want): void {
+  /** Starts `id` walking to `dest` from where it stands (or from the door when new; in place when `instant`). */
+  goTo(id: string, dest: string, o: { speed?: number; hurry?: boolean; delay?: number; instant?: boolean; leaving?: boolean } = {}): Actor {
+    const boss = id === 'manager'
+    let a = this.actors.get(id)
+    if (a && a.dest === dest && a.leaving === !!o.leaving) {
+      if (o.hurry) a.speed = Math.max(a.speed, hurry(a.length - a.t))
+      return a
+    }
+    const from = a ? this.at(a) : DOOR
+    const route = o.instant ? [[SPOTS[dest]?.x ?? DOOR[0], SPOTS[dest]?.feet ?? DOOR[1]] as Pt] : routeTo(from, dest, boss)
+    const length = routeLength(route)
+    const speed = o.hurry ? hurry(length) : (o.speed ?? STROLL)
+    const delay = o.delay ?? 0
+    if (!a) {
+      a = { id, dest, route, length, t: 0, speed, delay, leaving: !!o.leaving, arrivedAt: -1 }
+      this.actors.set(id, a)
+    } else Object.assign(a, { dest, route, length, t: 0, speed, delay, leaving: !!o.leaving, arrivedAt: -1 })
+    if (length === 0 && a.delay === 0) a.arrivedAt = this.tick
+    return a
+  }
+
+  /** Where `a` stands now. */
+  at(a: Actor): Pt {
+    const p = pointAt(a.route, a.t)
+    return [p.x, p.y]
+  }
+
+  here(id: string, dest?: string): boolean {
+    const a = this.actors.get(id)
+    return !!a && a.arrivedAt >= 0 && (dest === undefined || a.dest === dest)
+  }
+
+  /** Brings the office in line with `v`: agents to desks or the line, the janitor; the Life does the staff and the Manager. */
+  sync(v: View): void {
     const instant = !this.ready
     this.ready = true
     let arriving = 0
-    const bring = (id: string, spot: string) => {
+    const bring = (id: string, dest: string) => {
       const a = this.actors.get(id)
-      if (a) {
-        a.goal = 'in'
-        return
-      }
-      const route = [DOOR, ...(SPOTS[spot]?.route ?? [])]
-      const length = routeLength(route)
-      this.actors.set(id, {
-        id, spot, route, length, t: instant ? length : 0, goal: 'in',
-        delay: instant ? 0 : STAGGER * arriving++, speed: Math.max(2, Math.ceil(length / TRIP_TICKS)),
-      })
+      if (a && !a.leaving) return
+      this.goTo(id, dest, instant ? { instant: true } : { speed: Math.max(2, Math.ceil(routeLength(routeTo(DOOR, dest)) / 16)), delay: STAGGER * arriving++ })
     }
     const send = (id: string) => {
       const a = this.actors.get(id)
-      if (!a) return
-      a.goal = 'out'
-      if (instant || a.delay > 0) this.remove(id)
+      if (!a || a.leaving) return
+      if (instant || a.delay > 0) return this.remove(id)
+      this.goTo(id, 'door', { speed: Math.max(2, a.speed), leaving: true })
     }
-    const wanted = new Map(w.secs.map(s => [s.id, s]))
+    const secs = [...v.secs].sort((a, b) => a.order - b.order).map(s => ({ id: s.id, working: s.status === 'run' }))
+    const wanted = new Map(secs.map(s => [s.id, s]))
     for (let i = 0; i < DESKS; i++) {
       const id = this.desks[i]
       if (id && !wanted.has(id)) {
@@ -100,18 +286,22 @@ export class BigSim {
       }
     }
     const seated = new Set(this.desks.filter((d): d is string => d !== null))
-    let line = w.secs.filter(s => !seated.has(s.id))
+    let line = secs.filter(s => !seated.has(s.id))
     for (let i = 0; i < DESKS; i++) {
       const id = this.desks[i]
       const s = id ? wanted.get(id) : undefined
+      // A teammate waiting for a message gives its desk to a working agent. (A desk's owner with a job meanwhile
+      // works on the phone: sending the teammate out and back on every job would be a parade through the door.)
       if (s && !s.working && !this.leaving.has(s.id) && line.some(x => x.working)) {
         this.leaving.add(s.id)
         send('sec:' + s.id)
       }
     }
     line = [...line].sort((a, b) => Number(b.working) - Number(a.working))
-    for (let i = 0; i < DESKS && line.length; i++) {
-      if (this.desks[i] !== null) continue
+    for (const i of AGENT_DESKS) {
+      if (!line.length) break
+      const owner = DESK_OWNER[i]
+      if (this.desks[i] !== null || (owner && v.workers[owner])) continue
       const s = line.shift()!
       this.desks[i] = s.id
       bring('sec:' + s.id, 'desk' + i)
@@ -121,30 +311,35 @@ export class BigSim {
       if (id && wanted.has(id) && !this.leaving.has(id)) bring('sec:' + id, 'desk' + i)
     }
     this.queue = line.length + [...this.leaving].filter(id => wanted.has(id)).length
-    const want = new Set<string>(w.staff)
+    const want = new Set<string>()
+    if (v.janitor) want.add('janitor')
     for (let k = 0; k < Math.min(3, this.queue); k++) want.add('wait' + k)
     for (const id of want) bring(id, id)
-    for (const id of [...this.actors.keys()]) if (!id.startsWith('sec:') && !want.has(id)) send(id)
-    this.managerGoal = w.plan ? 'board' : 'seat'
-    if (instant) this.managerT = w.plan ? routeLength(MANAGER_ROUTE) : 0
+    for (const id of ['janitor', 'wait0', 'wait1', 'wait2']) if (!want.has(id)) send(id)
+    this.life.sync(this, v, instant)
   }
 
-  step(frozen: boolean): void {
-    if (frozen) return
+  /** One tick: the Life decides, everyone takes a step. Esc (frozen): nobody moves. */
+  step(v: View): void {
+    if (v.frozen) return
+    this.tick++
+    this.life.step(this, v)
     for (const a of [...this.actors.values()]) {
       if (a.delay > 0) {
         a.delay--
         continue
       }
-      a.t = a.goal === 'in' ? Math.min(a.length, a.t + a.speed) : Math.max(0, a.t - a.speed)
-      if (a.goal === 'out' && a.t === 0) this.remove(a.id)
+      if (a.t < a.length) {
+        a.t = Math.min(a.length, a.t + a.speed)
+        if (a.t === a.length) a.arrivedAt = this.tick
+      } else if (a.arrivedAt < 0) a.arrivedAt = this.tick
+      if (a.leaving && a.arrivedAt >= 0) this.remove(a.id)
     }
-    const end = routeLength(MANAGER_ROUTE)
-    this.managerT = this.managerGoal === 'board' ? Math.min(end, this.managerT + 3) : Math.max(0, this.managerT - 3)
   }
 
-  private remove(id: string): void {
+  remove(id: string): void {
     this.actors.delete(id)
+    this.life.forget(id)
     if (!id.startsWith('sec:')) return
     const sec = id.slice(4)
     this.leaving.delete(sec)
@@ -153,19 +348,34 @@ export class BigSim {
   }
 
   walking(): boolean {
-    const end = routeLength(MANAGER_ROUTE)
-    if (this.managerT > 0 && this.managerT < end) return true
-    for (const a of this.actors.values()) if (a.delay > 0 || (a.goal === 'in' ? a.t < a.length : a.t > 0)) return true
+    for (const a of this.actors.values()) if (a.delay > 0 || a.t < a.length) return true
     return false
   }
 
   doorOpen(): boolean {
     if (this.actors.has('wait2')) return true
-    for (const a of this.actors.values()) if (a.delay === 0 && a.t < 7 && (a.goal === 'out' || a.t < a.length)) return true
+    for (const a of this.actors.values()) {
+      if (a.delay > 0 || a.t >= a.length) continue
+      const p = this.at(a)
+      if (Math.abs(p[0] - DOOR[0]) + Math.abs(p[1] - DOOR[1]) < 7) return true
+    }
     return false
+  }
+
+  /** The front desk an agent has borrowed from `r`, if any. */
+  borrowed(r: Role): boolean {
+    const i = DESK_OWNER.indexOf(r)
+    return i >= 0 && this.desks[i] !== null
   }
 
   seated(): (string | null)[] {
     return this.desks.map(id => (id && !this.leaving.has(id) ? id : null))
   }
+
+  /** Who is on a break (or in the meeting) and doing what, for the list. */
+  breakLine(v: View): { who: string; what: string } | null {
+    return this.life.breakLine(this, v)
+  }
 }
+
+export const isRole = (id: string): id is Role => (ROLES as readonly string[]).includes(id)

@@ -1,5 +1,5 @@
-/** An office worker who handles one kind of tool. */
-export type Role = 'archivist' | 'typist' | 'it' | 'courier'
+/** An office worker who handles one kind of tool. The last three sit at the front desks. */
+export type Role = 'archivist' | 'typist' | 'it' | 'courier' | 'researcher' | 'planner' | 'librarian'
 
 /** A tool call of the main loop that is running now. */
 export type Job = {

@@ -110,6 +110,7 @@ const look = (d: LookDef): Look => {
       c: C(d.shirt), C: shade(d.shirt, 0.78), k: C(inner), T: C(d.tie ?? inner), p: C(pants), P: shade(pants, 0.75), f: C('#1a1d24'),
       g: C('#2b2f38'), G: C('#bfe3ff'), w: C('#ffffff'), K: C('#6b4226'), B: C('#7a4a2a'), q: C(d.cap ?? d.hair), y: C('#e8c47a'), Y: C('#c9a256'),
       r: C('#e04b4b'), n: C('#d4ecff'), M: C('#9aa3ae'), W: C('#8a5a32'), Z: C('#d9b75e'), v: C('#e3e8ee'),
+      L: C('#3fa37a'), D: C('#5bb8f0'),
     },
   }
 }
@@ -121,6 +122,9 @@ export const LOOK = {
   it: look({ skin: '#8d5a3b', hair: '#1e1a17', shirt: '#3a9a84', inner: '#2f7566', pants: '#2b2f3a', headset: true }),
   courier: look({ skin: '#e8b58e', hair: '#6b3e1e', style: 'cap', cap: '#e8a33d', shirt: '#d0603c', inner: '#f2e2c4', pants: '#3b4a6b', bag: true }),
   janitor: look({ skin: '#c98f6a', hair: '#4a3a2a', style: 'cap', cap: '#2f5f9e', shirt: '#3c6fb4', inner: '#e8eef7', pants: '#335f9c' }),
+  researcher: look({ skin: '#f0c8a0', hair: '#2b2b2b', shirt: '#e6b432', inner: '#fff6dc', pants: '#3b3f4f', glasses: true }),
+  planner: look({ skin: '#b97a56', hair: '#3b2418', style: 'long', shirt: '#5fa04e', inner: '#eef7e8', pants: '#2f3443' }),
+  librarian: look({ skin: '#f3d6c0', hair: '#c9a24a', style: 'bun', shirt: '#9c6b43', inner: '#f5ead8', pants: '#4a3b30' }),
   sec: [
     look({ skin: '#f3d0b4', hair: '#2a1d14', style: 'long', shirt: '#2fa39a', badge: true }),
     look({ skin: '#c58a63', hair: '#151210', style: 'bun', shirt: '#9a6fd6', badge: true }),
@@ -130,7 +134,7 @@ export const LOOK = {
 }
 export const secLook = (n: number): Look => LOOK.sec[((n % 4) + 4) % 4] ?? LOOK.manager
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk'
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk'
 export type PersonOpts = { f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number }
 
 /** Draws a person with their top-left at (x, y). Seated people show rows 0–8 (the desk hides the rest). */
@@ -273,7 +277,35 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       put(2, 7, 's')
       put(4, 7, 's')
       break
+    case 'water': {
+      // A watering can held out to the left, a drop falling.
+      del(0, 8)
+      put(0, 6, 's')
+      for (const [a, b] of [[-3, 6], [-2, 6], [-1, 6], [-3, 7], [-2, 7], [-1, 7]] as const) put(a, b, 'L')
+      put(-4, 5, 'L')
+      put(-5, 4, 'L')
+      put(-5, 5 + 1 + (f % 2), 'D')
+      if (f % 2) put(-6, 8, 'D')
+      break
+    }
+    case 'talk':
+      // A hand up now and then while talking.
+      if (f % 2) {
+        del(6, 8)
+        put(6, 5, 'C')
+        put(7, 4, 's')
+      }
+      break
     case 'walk':
+    case 'walkMug':
+      if (o.arms === 'walkMug') {
+        del(6, 8)
+        put(7, 7, 's')
+        put(7, 5, 'K')
+        put(8, 5, 'K')
+        put(7, 6, 'w')
+        put(8, 6, 'w')
+      }
       if (f % 2) {
         for (const [a, b] of [[2, 10], [4, 10], [2, 11], [4, 11], [1, 12], [2, 12], [4, 12], [5, 12]] as const) del(a, b)
         for (const [a, b, ch] of [[2, 10, 'p'], [1, 11, 'p'], [4, 10, 'P'], [5, 11, 'P'], [0, 12, 'f'], [1, 12, 'f'], [5, 12, 'f'], [6, 12, 'f']] as const) put(a, b, ch)
@@ -310,10 +342,15 @@ export function desk(fb: FB, x: number, y: number, w: number, h: number): void {
   fb.r(x, y + h - 1, w, 1, P.shadow)
   fb.s(x + Math.floor(w / 2), y + 4, P.knob)
 }
-export function monitor(fb: FB, x: number, y: number, on: boolean, f: number): void {
+export function monitor(fb: FB, x: number, y: number, on: boolean, f: number, game = false): void {
   fb.r(x, y, 5, 4, P.mon)
   fb.r(x, y, 5, 1, P.monHi)
-  if (on) {
+  if (game) {
+    // A little game: a bouncing ball and a paddle.
+    fb.r(x + 1, y + 1, 3, 2, '#2a1f4a')
+    fb.s(x + 1 + [0, 1, 2, 1][f % 4]!, y + 1, ['#ff5fa2', '#ffd84a', '#5fe0a0', '#5fb8ff'][f % 4]!)
+    fb.s(x + 1 + [1, 2, 1, 0][f % 4]!, y + 2, '#ffffff')
+  } else if (on) {
     fb.r(x + 1, y + 1, 3, 2, P.screen)
     for (let i = 0; i < 3; i++) if ((f + i * 3 + x) % 4 < 2) fb.s(x + 1 + i, y + 1 + ((f + i) % 2), P.code)
   } else fb.r(x + 1, y + 1, 3, 2, P.screenOff)
@@ -468,10 +505,25 @@ export function plant(fb: FB, x: number, y: number): void {
 
 /* ===== bubbles ===== */
 
-export function thinkBubble(fb: FB, x: number, y: number, f: number): void {
+/**
+ * The thought bubble, grown in `stage` steps so a short think never flashes it:
+ * 1 a dot by the head, 2 a second dot, 3 the bubble.
+ */
+export function thinkBubble(fb: FB, x: number, y: number, f: number, stage = 3): void {
   const W = 9
   const H = 7
   x = Math.max(0, Math.min(x, fb.w - W))
+  if (stage <= 0) return
+  if (stage < 3) {
+    fb.s(x, y + H + 2, OUT)
+    if (stage === 2) {
+      fb.r(x + 1, y + H, 2, 1, OUT)
+      fb.r(x + 3, y + H - 2, 3, 2, OUT)
+      fb.r(x + 4, y + H - 3, 1, 1, OUT)
+      fb.s(x + 4, y + H - 2, '#ffffff')
+    }
+    return
+  }
   fb.r(x + 1, y, W - 2, 1, OUT)
   fb.r(x + 1, y + H - 1, W - 2, 1, OUT)
   fb.r(x, y + 1, 1, H - 2, OUT)
@@ -481,6 +533,61 @@ export function thinkBubble(fb: FB, x: number, y: number, f: number): void {
   fb.s(x, y + H + 2, OUT)
   const n = f % 4
   for (let i = 0; i < 3; i++) fb.s(x + 2 + i * 2, y + 3, i < n ? OUT : '#d5d9e0')
+}
+
+/** A small bubble with a picture, not words: chatting, the meeting. Its tail points down at (cx, bottom). */
+export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask'): void {
+  const W = 7
+  const H = 6
+  const x = Math.max(0, Math.min(cx - 3, fb.w - W))
+  const y = bottom - H - 1
+  fb.r(x + 1, y, W - 2, 1, OUT)
+  fb.r(x + 1, y + H - 1, W - 2, 1, OUT)
+  fb.r(x, y + 1, 1, H - 2, OUT)
+  fb.r(x + W - 1, y + 1, 1, H - 2, OUT)
+  fb.r(x + 1, y + 1, W - 2, H - 2, '#ffffff')
+  fb.s(Math.max(x + 1, Math.min(cx, x + W - 2)), y + H, OUT)
+  const ink: Record<string, string> = { dots: '#2a2230', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6' }
+  const art: Record<string, string[]> = {
+    dots: ['.....', '.....', '#.#.#', '.....'],
+    ha: ['#.#..', '###.#', '#.#.#', '....#'],
+    heart: ['##.##', '#####', '.###.', '..#..'],
+    note: ['..##.', '..#.#', '###..', '##...'],
+    bang: ['..#..', '..#..', '.....', '..#..'],
+    ask: ['.###.', '...#.', '..#..', '..#..'],
+  }
+  ;(art[icon] ?? []).forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + 1 + i, y + 1 + j, ink[icon] ?? OUT)))
+}
+
+/** The coffee machine under the window; brewing: a cup under the spout, drips and steam. */
+export function coffeeMachine(fb: FB, x: number, y: number, brewing: boolean, f: number): void {
+  fb.r(x, y, 6, 8, '#3b404a')
+  fb.r(x, y, 6, 1, '#5b6170')
+  fb.r(x + 1, y + 1, 4, 2, '#262a33')
+  fb.s(x + 4, y + 1, brewing ? '#3fd273' : '#e04b4b')
+  fb.r(x + 1, y + 4, 4, 3, '#1d2129')
+  fb.s(x + 2, y + 4, '#9aa3ae')
+  fb.r(x, y + 7, 6, 1, '#5b6170')
+  if (brewing) {
+    fb.r(x + 2, y + 5, 2, 2, '#ffffff')
+    fb.s(x + 2, y + 5 - 0, (f % 2) ? '#6b4226' : '#ffffff')
+    if (f % 2) fb.s(x + 2, y + 4, '#6b4226')
+    fb.s(x + 1 + (f % 2), y - 1, '#e3e8ee')
+    fb.s(x + 2 - (f % 2), y - 2, '#e3e8ee')
+  }
+}
+
+/** The water cooler by the door; someone chatting by it makes it bubble. */
+export function waterCooler(fb: FB, x: number, y: number, busy: boolean, f: number): void {
+  fb.r(x + 1, y, 2, 1, '#9fd6f5')
+  fb.r(x, y + 1, 4, 4, '#79c4ef')
+  fb.s(x, y + 1, '#c8ebff')
+  fb.r(x, y + 5, 4, 5, '#e8ecf1')
+  fb.r(x, y + 5, 4, 1, '#c5ccd6')
+  fb.s(x + 1, y + 6, '#3a6fd6')
+  fb.s(x + 2, y + 6, P.red)
+  fb.r(x, y + 9, 4, 1, '#9aa3ae')
+  if (busy) fb.s(x + 1 + (f % 2), y + 4 - (f % 3), '#ffffff')
 }
 
 /** "z z Z" rising from the napping Manager. */

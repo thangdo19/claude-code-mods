@@ -5,6 +5,7 @@
 import { BIG_COLS } from './big-scene'
 import { Scene } from './big-sprites'
 import type { View } from './office'
+import type { BigSim } from './big-walk'
 
 /** The full office's height in pixels. */
 const OFFICE_H = 62
@@ -17,15 +18,39 @@ const BACK = 0 // the back wall: door, cabinets, rack, board
 const MIDDLE = 14 // the Manager's row, with the Courier and the Typist
 const FRONT = 30 // the agents' desks
 
+/** How long the camera looks at each break spot on its tour, ms. */
+const TOUR_MS = 20_000
+
+/** The part of the office (top row) where pixel row `feet` is. */
+const partOf = (feet: number) => (feet <= 30 ? BACK : feet <= 44 ? MIDDLE : FRONT)
+
 /** Where to look: the top row and the column to center, in pixels. */
-export function focusOf(v: View): { top: number; center: number } {
+export function focusOf(v: View, sim?: BigSim): { top: number; center: number } {
   const busy = (r: 'archivist' | 'it') => v.workers[r]?.state === 'work'
+  // Plan mode: the meeting at the board, its dialogs too.
+  if (v.planning && ['plan', 'permission', 'ask'].includes(v.mood)) return { top: BACK, center: 38 }
   // The Manager needs you or just finished: look at the Manager.
   if (['permission', 'ask', 'done', 'stopped', 'hold'].includes(v.mood)) return { top: MIDDLE, center: 32 }
-  if (v.secs.some(s => s.status === 'run')) return { top: FRONT, center: 32 }
+  if (v.secs.some(s => s.status === 'run') || (['researcher', 'planner', 'librarian'] as const).some(r => v.workers[r]?.state === 'work')) return { top: FRONT, center: 32 }
   if (busy('archivist') || busy('it')) return { top: BACK, center: busy('archivist') && !busy('it') ? 22 : busy('it') && !busy('archivist') ? 46 : 34 }
   // Plan mode: the Manager walks to the board.
   if (v.mood === 'plan') return { top: BACK, center: 38 }
+  const m = sim?.actors.get('manager')
+  if (sim && m && m.dest !== 'chair') {
+    const [x, y] = sim.at(m)
+    return { top: partOf(y), center: x + 3 }
+  }
+  // Between turns: now and then a look at whoever is chatting or making coffee, then back to the Manager.
+  if (sim && v.mood === 'idle' && !v.night) {
+    const spots = ['chatA', 'chatC', 'coffee', 'plant', 'visitCourier', 'visitTypist'].filter(d => [...sim.actors.values()].some(a => a.dest === d && a.arrivedAt >= 0))
+    const k = Math.floor(v.now / TOUR_MS) % (spots.length + 1)
+    const d = spots[k - 1]
+    if (d) {
+      const a = [...sim.actors.values()].find(x => x.dest === d)!
+      const [x, y] = sim.at(a)
+      return { top: partOf(y), center: d === 'chatA' ? 13 : d === 'chatC' ? 39 : x + 3 }
+    }
+  }
   return { top: MIDDLE, center: 32 }
 }
 
@@ -35,8 +60,8 @@ export class Camera {
   private ready = false
 
   /** One step toward what `v` shows in a window `w` × `h` pixels: a row (2 pixels) and a column at a time. */
-  step(v: View, w: number, h: number): void {
-    const f = focusOf(v)
+  step(v: View, w: number, h: number, sim?: BigSim): void {
+    const f = focusOf(v, sim)
     const top = Math.max(0, Math.min(OFFICE_H - h, f.top)) & ~1
     const left = Math.max(0, Math.min(BIG_COLS - w, f.center - Math.floor(w / 2)))
     if (!this.ready) {
@@ -51,8 +76,8 @@ export class Camera {
   }
 
   /** Still gliding toward its spot. */
-  moving(v: View, w: number, h: number): boolean {
-    const f = focusOf(v)
+  moving(v: View, w: number, h: number, sim?: BigSim): boolean {
+    const f = focusOf(v, sim)
     const top = Math.max(0, Math.min(OFFICE_H - h, f.top)) & ~1
     const left = Math.max(0, Math.min(BIG_COLS - w, f.center - Math.floor(w / 2)))
     return this.ready && (top !== this.top || left !== this.left)
