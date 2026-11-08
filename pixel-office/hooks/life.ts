@@ -1,15 +1,16 @@
-// Office life: what the staff and the Manager do with nothing to do (coffee, a
-// chat, a game, the plant), the planning meeting, and where the Manager goes
-// while Claude works. Decides only; BigSim walks. Seeded random, so a test sees
+// Office life: what the staff and the Manager do with nothing to do (between turns
+// a break: coffee, a chat, a game, the plant; while Claude works their own things at
+// their desk), reporting a finished job to the Manager, the planning meeting, and
+// where the Manager goes while Claude works. Decides only; BigSim walks. Seeded random, so a test sees
 // the same office every run.
 
 import type { Role } from '../types'
 import type { BigSim } from './big-walk'
-import { ROLE_NAME, ROLES, type View } from './office'
+import { LINGER_MS, ROLE_NAME, ROLES, type View } from './office'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
-export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask'
-export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host'
+export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'
+export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'read' | 'tidy' | 'stretch' | 'report'
 /** Someone with a life: a role, or 'manager'. */
 type Who = Role | 'manager'
 type Act = { kind: ActKind; spot: string; until: number; partner?: Who }
@@ -23,7 +24,20 @@ const FRONT: Partial<Record<Role, number>> = { researcher: 0, planner: 1, librar
 const VISIT: Partial<Record<Who, string>> = { courier: 'visitCourier', typist: 'visitTypist' }
 /** Two places to chat: by the water cooler, and by the board. */
 const CHATS: [string, string][] = [['chatA', 'chatB'], ['chatC', 'chatD']]
-const AT_HOME = new Set<ActKind>(['sip', 'phone', 'mug', 'game'])
+const AT_HOME = new Set<ActKind>(['sip', 'phone', 'mug', 'game', 'read', 'tidy', 'stretch'])
+/** Their own things at the desk while Claude works (no breaks then): kind, weight, shortest and longest ticks. */
+const DESK_ACTS: readonly [ActKind, number, number, number][] = [['read', 2, 96, 180], ['tidy', 2, 64, 120], ['sip', 2, 64, 120], ['phone', 2, 48, 96], ['stretch', 1, 24, 40]]
+const AT_DESK = new Set<ActKind>(DESK_ACTS.map(([k]) => k))
+/** Where a finished job is reported: either end of the Manager's desk. */
+const REPORT_SPOTS = ['rep0', 'rep1']
+/** Spots too close together for two people at once (a report spot and the visit / look-over spot below it). */
+const NEAR: Record<string, string[]> = {
+  rep0: ['visitCourier', 'supCourier'], rep1: ['visitTypist', 'supTypist'], visitCourier: ['rep0'], visitTypist: ['rep1'],
+}
+/** A finished worker waits this long (ms) for a next job before going to report. */
+export const REPORT_AFTER = 1000
+/** Ticks a report lasts once there (1.5 s). */
+const REPORT_TICKS = 12
 /** Spare places to stand (the meeting's, unused outside it) for someone whose desk an agent borrowed. */
 const SPARE = ['meet4', 'meet5', 'meet2', 'meet3', 'meet6']
 const CHAT_ICONS: Icon[] = ['dots', 'ha', 'heart', 'note']
@@ -56,6 +70,8 @@ function rng(seed: number): () => number {
 export const meeting = (v: View): boolean => v.planning && ['plan', 'permission', 'ask'].includes(v.mood)
 /** Between turns, before night: the Manager is on a break too. */
 export const managerFree = (v: View): boolean => v.mood === 'idle' && !v.night
+/** Claude's turn is on: breaks are over, everyone is at their own desk. */
+export const workTime = (v: View): boolean => !v.night && ['think', 'write', 'work', 'permission', 'ask', 'plan'].includes(v.mood)
 
 export class Life {
   readonly acts = new Map<Who, Act>()
@@ -67,6 +83,11 @@ export class Life {
   private banged = -1
   private restUntil = -1
   private readonly words = new Map<string, { text: string; at: number }>()
+  /** The finish each worker last reported (its endedAt), so one finish is reported once. */
+  private readonly reported = new Map<Role, number>()
+  /** The Typist was typing Claude's reply last tick; when the reply ended (a finish to report). */
+  private typingReply = false
+  private replyEnded = -Infinity
 
   /** Who is in the office: staff come for the workday, go home at night; the Manager is always in. */
   sync(sim: BigSim, v: View, instant: boolean): void {
@@ -90,26 +111,42 @@ export class Life {
 
   step(sim: BigSim, v: View): void {
     this.manager(sim, v)
+    const reply = v.workers.typist?.note === 'reply'
+    if (this.typingReply && !reply) this.replyEnded = v.now
+    this.typingReply = reply
+    const work = workTime(v)
     const free: Who[] = []
     for (const r of ROLES) {
       const a = sim.actors.get(r)
       if (!a || a.leaving) continue
-      if (v.workers[r]) {
+      const w = v.workers[r]
+      if (w && w.state !== 'linger') {
         this.endAct(r)
-        // An agent borrowed their desk: they work where they are (on the phone).
+        // An agent borrowed their desk: they work on the phone from a spot of their own (their meeting spot in
+        // the meeting, which no one else uses then).
         if (!sim.borrowed(r)) sim.goTo(r, HOME[r], { hurry: true })
+        else if (meeting(v)) sim.goTo(r, MEET[r], { hurry: true })
+        else if (!ownPlace(sim, r)) sim.goTo(r, spare(sim, r), { hurry: true })
       } else if (meeting(v)) {
         this.endAct(r)
         sim.goTo(r, MEET[r])
-      } else free.push(r)
+      } else {
+        // Just finished (a job, or the Typist's reply): report it to the Manager first.
+        let finished = w ? w.since : -Infinity
+        if (r === 'typist' && v.now - this.replyEnded < LINGER_MS) finished = Math.max(finished, this.replyEnded)
+        if (finished > -Infinity && this.reporting(sim, v, r, finished)) continue
+        free.push(r)
+      }
     }
     if (managerFree(v)) free.push('manager')
     for (const r of free) {
       const act = this.acts.get(r)
-      // Just in: to their own station first.
-      if (!act && !sim.here(r)) continue
-      if (act && this.valid(sim, r, act, free) && sim.tick < act.until) continue
-      this.next(sim, r, free)
+      // Just in, or on the way to their own place: there first. (In work time, never on to a break spot.)
+      // (Never on to their desk once an agent has it.)
+      const blocked = r !== 'manager' && sim.borrowed(r) && sim.actors.get(r)?.dest === HOME[r]
+      if (!act && !sim.here(r) && !blocked && (!work || r === 'manager' || ownPlace(sim, r))) continue
+      if (act && this.valid(sim, r, act, free, v) && sim.tick < act.until) continue
+      this.next(sim, r, free, v)
     }
     const want = v.mood === 'think' ? 3 : 0
     if (['permission', 'ask', 'hold', 'stopped', 'done'].includes(v.mood)) this.think = 0
@@ -140,6 +177,8 @@ export class Life {
     const t = sim.tick
     if (id === 'manager' && t < this.bangUntil) return 'bang'
     if (!isWho(id)) return null
+    const mine = this.acts.get(id)
+    if (mine?.kind === 'report') return sim.here(id, mine.spot) ? 'check' : null
     if (id !== 'manager' && meeting(v) && !v.workers[id]) {
       const there = ROLES.filter(r => !v.workers[r] && sim.here(r, MEET[r]))
       const phase = Math.floor(t / 16)
@@ -167,6 +206,14 @@ export class Life {
     const what: Record<ActKind, string> = {
       sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
       plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting',
+      read: 'reading', tidy: 'tidying up', stretch: 'stretching', report: 'reporting to the Manager',
+    }
+    if (workTime(v)) {
+      const parts = inside.map(r => {
+        const act = this.acts.get(r)
+        return NAME(r) + ' ' + (act ? what[act.kind] : 'back to the desk')
+      })
+      return { who: 'Desks', what: parts.join(' · ') }
     }
     const done = new Set<Who>()
     const parts: string[] = []
@@ -188,8 +235,10 @@ export class Life {
 
   /* ===== a break ===== */
 
-  private valid(sim: BigSim, r: Who, act: Act, free: Who[]): boolean {
+  private valid(sim: BigSim, r: Who, act: Act, free: Who[], v: View): boolean {
     if (act.spot === HOME[r] && r !== 'manager' && sim.borrowed(r)) return false
+    // Claude is working: the break is over.
+    if (workTime(v) && !AT_DESK.has(act.kind)) return false
     if (!act.partner) return true
     const theirs = this.acts.get(act.partner)
     return free.includes(act.partner) && theirs?.partner === r
@@ -203,8 +252,8 @@ export class Life {
     if (act.partner && this.acts.get(act.partner)?.partner === r) this.acts.delete(act.partner)
   }
 
-  private start(sim: BigSim, r: Who, kind: ActKind, spot: string, ticks: number, partner?: Who): number {
-    const a = sim.goTo(r, spot)
+  private start(sim: BigSim, r: Who, kind: ActKind, spot: string, ticks: number, partner?: Who, hurry = false): number {
+    const a = sim.goTo(r, spot, hurry ? { hurry: true } : {})
     const walk = Math.ceil((a.length - a.t) / a.speed) + a.delay
     const act: Act = { kind, spot, until: sim.tick + walk + ticks, partner }
     this.acts.set(r, act)
@@ -215,18 +264,46 @@ export class Life {
     return Math.round(lo + this.rand() * (hi - lo))
   }
 
-  private next(sim: BigSim, r: Who, free: Who[]): void {
+  /**
+   * A finished job: after a moment at the station (a next job may come), the worker walks over and
+   * reports to the Manager at the desk, or calls it in where they are when the Manager is away.
+   * True while that goes on (waiting, walking, reporting).
+   */
+  private reporting(sim: BigSim, v: View, r: Role, finished: number): boolean {
+    const act = this.acts.get(r)
+    if (act?.kind === 'report') return sim.tick < act.until
+    if (this.reported.get(r) === finished) return false
+    if (v.now - finished < REPORT_AFTER) return true
+    this.reported.set(r, finished)
+    this.endAct(r)
+    const spot = sim.here('manager', 'chair') ? REPORT_SPOTS.find(s => !crowded(sim, s, r)) : undefined
+    const dest = sim.actors.get(r)!.dest
+    const here = sim.borrowed(r) && dest === HOME[r] ? spare(sim, r) : dest
+    this.start(sim, r, 'report', spot ?? here, REPORT_TICKS, undefined, spot !== undefined)
+    return true
+  }
+
+  private next(sim: BigSim, r: Who, free: Who[], v: View): void {
     const prev = this.acts.get(r)
     this.endAct(r)
     const homeOk = r === 'manager' || !sim.borrowed(r)
     const home = HOME[r]
+    if (workTime(v) && r !== 'manager') {
+      // Their own things at their own desk (a spare spot, with a paper or the phone, if an agent borrowed it).
+      const spot = homeOk ? home : spare(sim, r)
+      const kinds = DESK_ACTS.filter(([k]) => k !== prev?.kind && (homeOk || k === 'read' || k === 'phone'))
+      let pick = this.rand() * kinds.reduce((n, [, w]) => n + w, 0)
+      const [kind, , lo, hi] = kinds.find(([, w]) => (pick -= w) <= 0) ?? kinds[kinds.length - 1]!
+      this.start(sim, r, kind, spot, this.between(lo, hi), undefined, sim.actors.get(r)?.dest !== spot)
+      return
+    }
     if (prev?.kind === 'coffee' && homeOk) {
       this.start(sim, r, 'mug', home, this.between(80, 160))
       return
     }
     const free1 = (spot: string) => !taken(sim, spot, r)
     const idle = free.filter(p => p !== r && (!this.acts.get(p) || AT_HOME.has(this.acts.get(p)!.kind)))
-    const hosts = idle.filter(p => VISIT[p] && sim.here(p, HOME[p]) && !taken(sim, VISIT[p]!, r))
+    const hosts = idle.filter(p => VISIT[p] && sim.here(p, HOME[p]) && !crowded(sim, VISIT[p]!, r))
     const options: [number, () => void][] = []
     if (homeOk) {
       if (prev?.kind !== 'sip') options.push([2, () => this.start(sim, r, 'sip', home, this.between(80, 160))])
@@ -281,6 +358,8 @@ export class Life {
     let goal = 'chair'
     if (meeting(v)) goal = 'board'
     else if (!urgent && mood !== 'write' && mood !== 'idle') goal = this.watch(sim, v)
+    // Someone is coming to report or reporting: the Manager hears them out at the desk first.
+    if (goal !== 'chair' && goal !== 'board' && m.dest === 'chair' && REPORT_SPOTS.some(s => taken(sim, s, 'manager'))) goal = 'chair'
     const away = m.dest.startsWith('sup') || m.dest.startsWith('patrol')
     // Once somewhere, the Manager stays a moment (no back and forth), unless needed at the desk.
     if (away && goal !== m.dest && !urgent && mood !== 'write' && !meeting(v) && m.arrivedAt >= 0 && sim.tick - m.arrivedAt < STAY) goal = m.dest
@@ -305,7 +384,8 @@ export class Life {
     for (const r of ROLES) {
       const i = FRONT[r]
       const w = v.workers[r]
-      if (i !== undefined && w?.state === 'work' && v.now - w.since >= SLOW_MS && sim.here(r, HOME[r]) && !slowDesks.includes(i)) slowDesks.push(i)
+      // (Not a briefing or the reply: those never need a look.)
+      if (i !== undefined && w?.state === 'work' && !w.note && v.now - w.since >= SLOW_MS && sim.here(r, HOME[r]) && !slowDesks.includes(i)) slowDesks.push(i)
     }
     slowDesks.sort((a, b) => a - b)
     if (slowDesks.length) {
@@ -321,7 +401,7 @@ export class Life {
       if (sim.tick < this.restUntil) return 'chair'
       return 'patrol' + slowDesks[0]
     }
-    const slow = ROLES.filter(r => SUP[r] && v.workers[r]?.state === 'work' && v.now - v.workers[r]!.since >= SLOW_MS)
+    const slow = ROLES.filter(r => SUP[r] && v.workers[r]?.state === 'work' && !v.workers[r]!.note && v.now - v.workers[r]!.since >= SLOW_MS)
     if (slow.some(r => SUP[r] === m.dest)) return m.dest
     const first = [...slow].sort((a, b) => v.workers[a]!.since - v.workers[b]!.since)[0]
     return first ? SUP[first]! : 'chair'
@@ -330,6 +410,13 @@ export class Life {
 
 /** Someone is at or on the way to `spot` (other than `me`). */
 const taken = (sim: BigSim, spot: string, me: string) => [...sim.actors.values()].some(a => a.dest === spot && !a.leaving && a.id !== me)
+/** `spot` or one too close to it is taken. */
+const crowded = (sim: BigSim, spot: string, me: string) => taken(sim, spot, me) || (NEAR[spot] ?? []).some(s => taken(sim, s, me))
+/** `r` is at, or on the way to, their own place: their station, or a spare spot when an agent has their desk. */
+const ownPlace = (sim: BigSim, r: Role) => {
+  const dest = sim.actors.get(r)?.dest ?? ''
+  return sim.borrowed(r) ? SPARE.includes(dest) : dest === HOME[r]
+}
 /** A free spare place to stand. */
 const spare = (sim: BigSim, me: string) => SPARE.find(s => !taken(sim, s, me)) ?? SPARE[0]!
 

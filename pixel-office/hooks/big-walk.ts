@@ -3,7 +3,7 @@
 // over with everyone already in place.
 
 import type { Role } from '../types'
-import { ROLES, type View } from './office'
+import { ROLES, SEC_LOOKS, type View } from './office'
 import { Life } from './life'
 
 export type Pt = readonly [number, number]
@@ -73,6 +73,9 @@ export const SPOTS: Record<string, Spot> = {
   patrol1: spot([21, 48]),
   patrol2: spot([37, 48]),
   patrol3: spot([53, 48]),
+  // Reporting a finished job: at either end of the Manager's desk, the Manager still in view.
+  rep0: spot([16, 40]),
+  rep1: spot([43, 40]),
 }
 export const DESKS = 4
 /** Who owns each front desk; the last one is kept free for agents. An agent may borrow an owner's desk while they have no job. */
@@ -198,7 +201,7 @@ export function routeTo(from: Pt, to: string, boss = false): Pt[] {
 /* ===== people ===== */
 
 export type Actor = {
-  /** 'manager', a role, 'janitor', 'sec:<agentId>' or 'wait0'..'wait2'. */
+  /** 'manager', a role, 'janitor' or 'sec:<agentId>' (an agent at a desk or in line at the door). */
   id: string
   /** The spot walked to. */
   dest: string
@@ -227,6 +230,8 @@ export class BigSim {
   readonly life = new Life()
   private ready = false
   private readonly leaving = new Set<string>()
+  /** Agent id → their look (index into the agent looks) while in the office: no two look alike. */
+  private readonly looks = new Map<string, number>()
 
   /** Starts `id` walking to `dest` from where it stands (or from the door when new; in place when `instant`). */
   goTo(id: string, dest: string, o: { speed?: number; hurry?: boolean; delay?: number; instant?: boolean; leaving?: boolean } = {}): Actor {
@@ -276,6 +281,19 @@ export class BigSim {
       if (instant || a.delay > 0) return this.remove(id)
       this.goTo(id, 'door', { speed: Math.max(2, a.speed), leaving: true })
     }
+    // Looks are kept only by agents in the office (a look frees up when its agent is out of the door).
+    for (const id of [...this.looks.keys()]) if (!this.actors.has('sec:' + id)) this.looks.delete(id)
+    const orderOf = new Map(v.secs.map(s => [s.id, s.order]))
+    /** Agent `id` walks to `dest`: on from where they stand (the line moves up, a desk frees up), or in from the door. */
+    const place = (id: string, dest: string) => {
+      const key = 'sec:' + id
+      const a = this.actors.get(key)
+      if (a && !a.leaving && a.dest === dest) return
+      // Nobody walks in looking like someone already inside; a look frees up in a moment (someone walking out).
+      if (!this.giveLook(id, orderOf.get(id) ?? 0)) return
+      if (!a || a.leaving) return bring(key, dest)
+      this.goTo(key, dest, { speed: Math.max(STROLL, Math.ceil(routeLength(routeTo(this.at(a), dest)) / 16)) })
+    }
     const secs = [...v.secs].sort((a, b) => a.order - b.order).map(s => ({ id: s.id, working: s.status === 'run' }))
     const wanted = new Map(secs.map(s => [s.id, s]))
     for (let i = 0; i < DESKS; i++) {
@@ -298,24 +316,25 @@ export class BigSim {
       }
     }
     line = [...line].sort((a, b) => Number(b.working) - Number(a.working))
+    // After Esc nobody moves, so no desk changes hands then (its owner couldn't step away).
     for (const i of AGENT_DESKS) {
-      if (!line.length) break
+      if (!line.length || v.frozen) break
       const owner = DESK_OWNER[i]
       if (this.desks[i] !== null || (owner && v.workers[owner])) continue
-      const s = line.shift()!
-      this.desks[i] = s.id
-      bring('sec:' + s.id, 'desk' + i)
+      this.desks[i] = line.shift()!.id
     }
-    for (let i = 0; i < DESKS; i++) {
+    for (const i of AGENT_DESKS) {
       const id = this.desks[i]
-      if (id && wanted.has(id) && !this.leaving.has(id)) bring('sec:' + id, 'desk' + i)
+      if (id && wanted.has(id) && !this.leaving.has(id)) place(id, 'desk' + i)
     }
     this.queue = line.length + [...this.leaving].filter(id => wanted.has(id)).length
-    const want = new Set<string>()
-    if (v.janitor) want.add('janitor')
-    for (let k = 0; k < Math.min(3, this.queue); k++) want.add('wait' + k)
-    for (const id of want) bring(id, id)
-    for (const id of ['janitor', 'wait0', 'wait1', 'wait2']) if (!want.has(id)) send(id)
+    // The line at the door: the first three in line stand there themselves; anyone else there walks out.
+    const front = line.slice(0, 3)
+    front.forEach((s, k) => place(s.id, 'wait' + k))
+    const inLine = new Set(front.map(s => 'sec:' + s.id))
+    for (const a of [...this.actors.values()]) if (a.dest.startsWith('wait') && !inLine.has(a.id)) send(a.id)
+    if (v.janitor) bring('janitor', 'janitor')
+    else send('janitor')
     this.life.sync(this, v, instant)
   }
 
@@ -353,7 +372,7 @@ export class BigSim {
   }
 
   doorOpen(): boolean {
-    if (this.actors.has('wait2')) return true
+    for (const a of this.actors.values()) if (a.dest === 'wait2' && !a.leaving) return true
     for (const a of this.actors.values()) {
       if (a.delay > 0 || a.t >= a.length) continue
       const p = this.at(a)
@@ -366,6 +385,24 @@ export class BigSim {
   borrowed(r: Role): boolean {
     const i = DESK_OWNER.indexOf(r)
     return i >= 0 && this.desks[i] !== null
+  }
+
+  /** Agent `id`'s look (an index into the agent looks), while they're in the office. */
+  lookOf(id: string): number | undefined {
+    return this.looks.get(id)
+  }
+
+  /** Gives agent `id` a look nobody in the office has: theirs by spawn order, or the next free one. */
+  private giveLook(id: string, order: number): boolean {
+    if (this.looks.has(id)) return true
+    const used = new Set(this.looks.values())
+    for (let k = 0; k < SEC_LOOKS; k++) {
+      const n = (((order + k) % SEC_LOOKS) + SEC_LOOKS) % SEC_LOOKS
+      if (used.has(n)) continue
+      this.looks.set(id, n)
+      return true
+    }
+    return false
   }
 
   seated(): (string | null)[] {

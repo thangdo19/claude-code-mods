@@ -125,17 +125,24 @@ export const LOOK = {
   researcher: look({ skin: '#f0c8a0', hair: '#2b2b2b', shirt: '#e6b432', inner: '#fff6dc', pants: '#3b3f4f', glasses: true }),
   planner: look({ skin: '#b97a56', hair: '#3b2418', style: 'long', shirt: '#5fa04e', inner: '#eef7e8', pants: '#2f3443' }),
   librarian: look({ skin: '#f3d6c0', hair: '#c9a24a', style: 'bun', shirt: '#9c6b43', inner: '#f5ead8', pants: '#4a3b30' }),
+  // Agents ("secretaries"): eight looks, so up to 8 in the office at once never look alike (4 desks + 3 in line + one
+  // walking out). Each differs from every staff member in shirt color and hair; all wear the agency badge.
   sec: [
-    look({ skin: '#f3d0b4', hair: '#2a1d14', style: 'long', shirt: '#2fa39a', badge: true }),
-    look({ skin: '#c58a63', hair: '#151210', style: 'bun', shirt: '#9a6fd6', badge: true }),
-    look({ skin: '#f0c9a8', hair: '#e2b85c', style: 'long', shirt: '#e58b3a', badge: true }),
-    look({ skin: '#8e5b3c', hair: '#2b211a', shirt: '#4d86d9', badge: true, glasses: true }),
+    look({ skin: '#f1c9a5', hair: '#1b1512', style: 'long', shirt: '#c8384e', inner: '#fbe4e8', badge: true }),
+    look({ skin: '#f3d0b4', hair: '#7a4a26', style: 'bun', shirt: '#56b4e9', inner: '#e6f5ff', badge: true }),
+    look({ skin: '#f6d8c2', hair: '#e07b39', shirt: '#5b52d1', inner: '#e4e2fb', badge: true }),
+    look({ skin: '#7a4a30', hair: '#121010', style: 'bun', shirt: '#b3cf32', inner: '#f3f9dc', badge: true }),
+    look({ skin: '#e2ae84', hair: '#3a2216', style: 'long', shirt: '#2fc4d6', inner: '#e3fbfd', badge: true }),
+    look({ skin: '#a86b48', hair: '#1c1714', shirt: '#7f8a99', inner: '#e6eaef', badge: true, glasses: true }),
+    look({ skin: '#f7e0d0', hair: '#efe3b8', shirt: '#d04bb8', inner: '#fbe3f6', badge: true }),
+    look({ skin: '#5e3a26', hair: '#141110', shirt: '#8c2f47', inner: '#f3dde3', badge: true }),
   ],
 }
-export const secLook = (n: number): Look => LOOK.sec[((n % 4) + 4) % 4] ?? LOOK.manager
+export const secLook = (n: number): Look => LOOK.sec[((n % LOOK.sec.length) + LOOK.sec.length) % LOOK.sec.length] ?? LOOK.manager
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk'
-export type PersonOpts = { f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number }
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch'
+/** `busy`: on a job — typing hands hop out and in (see workFx for the paper bits). */
+export type PersonOpts = { f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number; busy?: boolean }
 
 /** Draws a person with their top-left at (x, y). Seated people show rows 0–8 (the desk hides the rest). */
 export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts = {}): void {
@@ -188,7 +195,16 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
     case 'type':
       del(0, 8)
       del(6, 8)
-      if (f % 2) {
+      if (o.busy) {
+        // On a job: both hands hop on the keys, out and in.
+        if (f % 2) {
+          put(0, 7, 's')
+          put(5, 8, 's')
+        } else {
+          put(1, 8, 's')
+          put(6, 7, 's')
+        }
+      } else if (f % 2) {
         put(1, 7, 's')
         put(5, 8, 's')
       } else {
@@ -288,6 +304,45 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       if (f % 2) put(-6, 8, 'D')
       break
     }
+    case 'read':
+      // A newspaper held up, a page turning now and then.
+      for (const [a, b] of [[0, 6], [0, 7], [0, 8], [6, 6], [6, 7], [6, 8]] as const) del(a, b)
+      for (let yy = 5; yy <= 8; yy++) for (let xx = 0; xx <= 6; xx++) put(xx, yy, 'v')
+      for (const [a, b] of [[1, 6], [2, 6], [4, 6], [5, 6], [1, 8], [2, 8], [4, 8], [3, 5], [3, 6], [3, 7], [3, 8]] as const) put(a, b, 'M')
+      if ((f >> 3) % 2) for (let yy = 5; yy <= 8; yy++) put(5, yy, 'w')
+      put(-1, 7, 's')
+      put(7, 7, 's')
+      break
+    case 'tidy': {
+      // Squaring a stack of papers: tap, tap.
+      del(0, 8)
+      del(6, 8)
+      const up = (f >> 1) % 2
+      for (let xx = 1; xx <= 5; xx++) {
+        put(xx, 7 - up, 'w')
+        put(xx, 8 - up, 'v')
+      }
+      put(3, 8 - up, 'M')
+      put(0, 8 - up, 's')
+      put(6, 8 - up, 's')
+      break
+    }
+    case 'stretch':
+      // A slow stretch: arms out wide, then up.
+      for (const [a, b] of [[0, 6], [0, 7], [0, 8], [6, 6], [6, 7], [6, 8]] as const) del(a, b)
+      if ((f >> 2) % 2) {
+        for (let r = 2; r <= 5; r++) {
+          put(0, r, 'c')
+          put(6, r, 'C')
+        }
+        put(0, 1, 's')
+        put(6, 1, 's')
+      } else {
+        for (const [a, ch] of [[-1, 'c'], [0, 'c'], [6, 'C'], [7, 'C']] as const) put(a, 6, ch)
+        put(-2, 6, 's')
+        put(8, 6, 's')
+      }
+      break
     case 'talk':
       // A hand up now and then while talking.
       if (f % 2) {
@@ -319,6 +374,14 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
     const col = L.pal[ch]
     if (col !== undefined) fb.s(x + px, y + py, col)
   }
+}
+
+/** On a job: two bits of paper fly up from the hands of the person drawn at (x, y). `f`: every tick. */
+export function workFx(fb: FB, x: number, y: number, f: number): void {
+  const a = f % 4
+  const b = (f + 2) % 4
+  fb.s(x + 7 + (a >> 1), y + 6 - a, '#ffffff')
+  fb.s(x - 1 - (b >> 1), y + 6 - b, '#fff3c4')
 }
 
 /* ===== furniture ===== */
@@ -536,7 +599,7 @@ export function thinkBubble(fb: FB, x: number, y: number, f: number, stage = 3):
 }
 
 /** A small bubble with a picture, not words: chatting, the meeting. Its tail points down at (cx, bottom). */
-export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask'): void {
+export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'): void {
   const W = 7
   const H = 6
   const x = Math.max(0, Math.min(cx - 3, fb.w - W))
@@ -547,7 +610,7 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
   fb.r(x + W - 1, y + 1, 1, H - 2, OUT)
   fb.r(x + 1, y + 1, W - 2, H - 2, '#ffffff')
   fb.s(Math.max(x + 1, Math.min(cx, x + W - 2)), y + H, OUT)
-  const ink: Record<string, string> = { dots: '#2a2230', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6' }
+  const ink: Record<string, string> = { dots: '#2a2230', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6', check: '#2f9e57' }
   const art: Record<string, string[]> = {
     dots: ['.....', '.....', '#.#.#', '.....'],
     ha: ['#.#..', '###.#', '#.#.#', '....#'],
@@ -555,6 +618,7 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
     note: ['..##.', '..#.#', '###..', '##...'],
     bang: ['..#..', '..#..', '.....', '..#..'],
     ask: ['.###.', '...#.', '..#..', '..#..'],
+    check: ['....#', '...#.', '#.#..', '.#...'],
   }
   ;(art[icon] ?? []).forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + 1 + i, y + 1 + j, ink[icon] ?? OUT)))
 }

@@ -2,11 +2,13 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { bigCells } from '../hooks/big-cells'
 import { BIG_COLS, BIG_ROWS, renderBig } from '../hooks/big-scene'
+import { LOOK } from '../hooks/big-sprites'
 import { BigSim, routeTo, SPOTS } from '../hooks/big-walk'
 import { Calm, CALM_HOLD } from '../hooks/calm'
 import { describe as label, mask } from '../hooks/labels'
 import { Camera, CAM_COLS, CAM_ROWS, focusOf } from '../hooks/camera'
-import { addSec, DONE_MS, EMPTY, endJob, endTurn, LINGER_MS, lines, NIGHT_MS, setMood, startJob, startTurn, STOP_MS, view, type View } from '../hooks/office'
+import { REPORT_AFTER } from '../hooks/life'
+import { addSec, BRIEF_MS, DONE_MS, DOT, EMPTY, endJob, endTurn, LINGER_MS, lines, NIGHT_MS, setMood, startJob, startTurn, STOP_MS, view, type View } from '../hooks/office'
 import type { Office } from '../types'
 
 // The test environment has timers; its type declarations name none.
@@ -44,6 +46,26 @@ test('each tool goes to the right worker, with short and full words', async () =
   expect(label('TodoWrite', {})).toEqual({ who: 'planner', short: 'to-dos', full: 'Update the to-do list' })
   expect(label('ToolSearch', { query: 'select:Read' })).toEqual({ who: 'librarian', short: 'tools', full: 'Look up tools: Read' })
   expect(label('AskUserQuestion', {}).who).toBe('manager')
+  // Work that used to be the Manager's alone.
+  expect(label('SendMessage', { to: 'tester' })).toEqual({ who: 'courier', short: 'to tester', full: 'Note to tester' })
+  expect(label('ListAgents', {}).who).toBe('courier')
+  expect(label('EnterWorktree', { name: 'fix' })).toEqual({ who: 'it', short: 'worktree', full: 'Set up a worktree: fix' })
+  expect(label('Agent', { description: 'find login' })).toEqual({ who: 'planner', short: 'new agent', full: 'Brief a new agent: find login', brief: true })
+})
+
+test('briefing a new agent keeps the Planner busy a moment, not for the whole agent run', async () => {
+  let o = startJob(startTurn(EMPTY, 0), { id: 'a', role: 'planner', short: 'new agent', full: 'Brief a new agent', startedAt: 0, brief: true })
+  expect(view(o, BRIEF_MS - 1).workers.planner).toMatchObject({ state: 'work', note: 'brief' })
+  // Three briefed at once (agents started in parallel): the bubble says so in full.
+  const three = ['x', 'y'].reduce((p, id) => startJob(p, { id, role: 'planner', short: 'new agent', full: 'Brief a new agent', startedAt: 0, brief: true }), o)
+  expect(view(three, 1).workers.planner?.short).toBe('agents x3')
+  expect(view(o, BRIEF_MS + 1).workers.planner).toMatchObject({ state: 'linger', since: BRIEF_MS })
+  // The agent returns much later: no second finish (nothing to report again).
+  o = endJob(o, 'a', 'planner', { short: 'new agent', full: 'Brief a new agent', err: false, denied: false, endedAt: 60_000 })
+  expect(view(o, 60_001).workers.planner).toBeUndefined()
+  // A failed one still shows.
+  const failed = endJob(startJob(o, { id: 'b', role: 'planner', short: 'new agent', full: 'Brief', startedAt: 61_000, brief: true }), 'b', 'planner', { short: 'new agent', full: 'Brief', err: true, denied: false, endedAt: 70_000 })
+  expect(view(failed, 70_001).workers.planner?.state).toBe('error')
 })
 
 test('secrets in a command are hidden', async () => {
@@ -134,6 +156,76 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
   expect([...sim.actors.keys()]).toEqual(['manager'])
 })
 
+const BREAK_SPOTS = ['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist']
+const STAFF = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian'] as const
+
+test('while Claude works the break is over: everyone at their own desk, doing their own things', async () => {
+  const sim = new BigSim()
+  const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  run(sim, day, 2, 400)
+  const work = startTurn(day, 50_000)
+  run(sim, work, 50_000, 80)
+  for (const r of STAFF) expect(sim.actors.get(r)!.dest).toBe(r === 'researcher' ? 'desk0' : r === 'planner' ? 'desk1' : r === 'librarian' ? 'desk2' : r)
+  expect(sim.breakLine(view(work, 60_000))?.who).toBe('Desks')
+  for (let i = 0; i < 400; i++) {
+    run(sim, work, 60_000 + i * 125, 1)
+    for (const r of STAFF) expect(BREAK_SPOTS).not.toContain(sim.actors.get(r)!.dest)
+  }
+})
+
+test('Claude writing the reply: the Manager dictates, the Typist types it, then reports it once', async () => {
+  const o = setMood(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'write', 1)
+  expect(view(o, 2).workers.typist).toMatchObject({ state: 'work', short: 'reply', note: 'reply' })
+  expect(lines(view(o, 2)).map(l => l.what)).toContain('Typing the reply')
+  const sim = new BigSim()
+  run(sim, o, 2, 40)
+  const after = setMood(o, 'think', 5_000)
+  run(sim, after, 5_000, 4)
+  expect(sim.life.activity('typist')).not.toBe('report')
+  run(sim, after, 5_000 + REPORT_AFTER, 2)
+  expect(sim.life.activity('typist')).toBe('report')
+  expect(sim.actors.get('typist')!.dest.startsWith('rep')).toBe(true)
+  run(sim, after, 6_500, 60)
+  expect(sim.actors.get('typist')!.dest).toBe('typist')
+  expect(sim.life.activity('typist')).not.toBe('report')
+})
+
+test('a finished worker reports to the Manager; a next job first means no report', async () => {
+  const sim = new BigSim()
+  const read = { id: 'r', role: 'archivist' as const, short: 'a.ts', full: 'Read a.ts', startedAt: 1_000 }
+  let o = startJob(startTurn({ ...EMPTY, lastActivity: 1 }, 1), read)
+  run(sim, o, 1_000, 8)
+  o = endJob(o, 'r', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 2_000 })
+  // Another job within a second: straight to it, no report.
+  const next = startJob(o, { ...read, id: 'r2', startedAt: 2_500 })
+  run(sim, next, 2_000, 8)
+  expect(sim.life.activity('archivist')).toBe(null)
+  const done = endJob(next, 'r2', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 3_000 })
+  run(sim, done, 3_000, 4 + REPORT_AFTER / 125)
+  expect(sim.life.activity('archivist')).toBe('report')
+  expect(sim.actors.get('archivist')!.dest).toBe('rep0')
+  run(sim, done, 4_500, 8)
+  expect(sim.here('archivist', 'rep0')).toBe(true)
+  expect(sim.life.icon(sim, view(done, 5_500), 'archivist')).toBe('check')
+  run(sim, done, 5_500, 60)
+  expect(sim.actors.get('archivist')!.dest).toBe('archivist')
+})
+
+test('the Manager away from the desk: the report is called in from where the worker is', async () => {
+  const sim = new BigSim()
+  let o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  // A slow job for the Courier: the Manager goes over to look.
+  o = startJob(o, { id: 'w', role: 'courier', short: 'chrome', full: 'chrome: navigate', startedAt: 1 })
+  run(sim, o, 2, 60)
+  expect(sim.here('manager', 'supCourier')).toBe(true)
+  o = startJob(o, { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 7_500 })
+  run(sim, o, 7_500, 4)
+  const done = endJob(o, 'r', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 8_000 })
+  run(sim, done, 8_000, 2 + REPORT_AFTER / 125)
+  expect(sim.life.activity('archivist')).toBe('report')
+  expect(sim.actors.get('archivist')!.dest).toBe('archivist')
+})
+
 test('plan mode: the Manager calls everyone free to the board', async () => {
   const sim = new BigSim()
   const o = { ...startTurn(EMPTY, 1), plan: true }
@@ -184,13 +276,39 @@ test('more agents than desks wait in line; agents borrow staff desks; a waiting 
   sim.sync(view(o, 2))
   expect(sim.seated()).toEqual(['d', 'c', 'b', 'a'])
   expect(sim.queue).toBe(2)
-  expect(sim.actors.has('wait0')).toBe(true)
+  // The line at the door is the waiting agents themselves, first come first served.
+  expect(sim.actors.get('sec:e')?.dest).toBe('wait0')
+  expect(sim.actors.get('sec:f')?.dest).toBe('wait1')
   expect(sim.borrowed('researcher')).toBe(true)
 
   const waiting = { ...o, secs: o.secs.map(s => (s.id === 'b' ? { ...s, status: 'idle' as const } : s)) }
-  run(sim, waiting, 2, 40)
+  run(sim, waiting, 2, 60)
   expect(sim.seated()).toEqual(['d', 'c', 'e', 'a'])
   expect(sim.queue).toBe(2)
+  // e walked from the line to the desk; b walked out and waits behind the working f.
+  expect(sim.here('sec:e', 'desk2')).toBe(true)
+  expect(sim.actors.get('sec:f')?.dest).toBe('wait0')
+  expect(sim.actors.get('sec:b')?.dest).toBe('wait1')
+})
+
+test('no two agents in the office look alike, however many come and go', async () => {
+  const sim = new BigSim()
+  let o = startTurn(EMPTY, 1)
+  let n = 0
+  for (; n < 9; n++) o = sec(o, 'a' + n, 1)
+  for (let t = 0; t < 600; t++) {
+    const now = 2 + t * 125
+    // Now and then an agent finishes and goes (the oldest, or one in line), and a new one is sent.
+    if (t % 13 === 12) o = sec({ ...o, secs: o.secs.filter((_, i) => i !== (t % 3 ? 0 : o.secs.length - 1)) }, 'a' + n++, now)
+    if (t % 29 === 28) o = { ...o, secs: o.secs.map((s, i) => (i === 1 ? { ...s, status: s.status === 'run' ? ('idle' as const) : ('run' as const) } : s)) }
+    const v = view(o, now)
+    sim.sync(v)
+    sim.step(v)
+    const looks = [...sim.actors.keys()].filter(id => id.startsWith('sec:')).map(id => sim.lookOf(id.slice(4)))
+    expect(looks.includes(undefined)).toBe(false)
+    expect(new Set(looks).size).toBe(looks.length)
+  }
+  expect(LOOK.sec.length).toBe(DOT.sec.length)
 })
 
 test('the pane shows what a running call does, on every surface', async ($, on) => {

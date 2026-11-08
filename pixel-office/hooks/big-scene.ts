@@ -5,7 +5,7 @@
 import type { Role, Sec } from '../types'
 import {
   board, cabinet, clock, coffeeMachine, desk, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, rack,
-  room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, zzz, type Arms, type Look,
+  room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type Look,
 } from './big-sprites'
 import type { Tone, View } from './office'
 import { DESK_OWNER, DESKS, isRole, SPOTS, type BigSim } from './big-walk'
@@ -14,14 +14,20 @@ import { HOME, managerFree, meeting, type ActKind, type Icon } from './life'
 export const BIG_COLS = 64
 export const BIG_ROWS = 31
 
-const MANAGER_ARMS: Record<string, Arms> = { idle: 'sleep', think: 'chin', write: 'type', work: 'mug', permission: 'raise', ask: 'raise', done: 'mug', stopped: 'down', hold: 'phone' }
+// Writing the reply: the Manager dictates (the Typist types it, with the words).
+const MANAGER_ARMS: Record<string, Arms> = { idle: 'sleep', think: 'chin', write: 'talk', work: 'mug', permission: 'raise', ask: 'raise', done: 'mug', stopped: 'down', hold: 'phone' }
 const MANAGER_BUBBLE: Record<string, [string, Tone]> = {
-  write: ['writing..', ''], permission: ['Your OK?', 'warn'], ask: ['Question?', 'warn'], done: ['Done!', 'good'],
+  permission: ['Your OK?', 'warn'], ask: ['Question?', 'warn'], done: ['Done!', 'good'],
   stopped: ['Stopped', 'bad'], hold: ['On hold', 'bad'], plan: ['Planning', ''],
 }
 const URGENT = new Set(['permission', 'ask', 'done', 'stopped', 'hold'])
 /** How someone on a break holds their arms. */
-const BREAK_ARMS: Record<ActKind, Arms> = { sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk' }
+const BREAK_ARMS: Record<ActKind, Arms> = {
+  sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
+  read: 'read', tidy: 'tidy', stretch: 'stretch', report: 'talk',
+}
+/** The spots where a finished job is reported to the Manager. */
+const REPORT_AT = ['rep0', 'rep1']
 /** How each worker holds their arms on a job. */
 const WORK_ARMS: Partial<Record<Role, Arms>> = { typist: 'type', it: 'type', researcher: 'type', planner: 'type', librarian: 'folder' }
 
@@ -114,6 +120,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     let eyes: 'closed' | undefined
     let lk: Look
     let bubble: [string, Tone] | null = null
+    /** On a job: hands hop and paper flies, so you can tell who works. */
+    let working = false
 
     if (a.id === 'manager') {
       lk = LOOK.manager
@@ -128,7 +136,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       else arms = sim.tick < life.bangUntil ? 'point' : v.mood === 'think' ? 'chin' : 'down'
       if (napping) arms = 'sleep'
       eyes = napping ? 'closed' : undefined
-      smile ||= v.mood === 'done'
+      smile ||= v.mood === 'done' || (seat && REPORT_AT.some(hereAt))
       const key = seat ? 42 : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
       at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? tick : F, arms: pose, eyes, smile }))
@@ -153,9 +161,14 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     }
 
     if (a.id.startsWith('sec:')) {
-      const sec = v.secs.find(s => 'sec:' + s.id === a.id)
-      lk = secLook(sec?.order ?? 0)
-      if (sec) {
+      const id = a.id.slice(4)
+      const sec = v.secs.find(s => s.id === id)
+      lk = secLook(sim.lookOf(id) ?? sec?.order ?? 0)
+      if (a.dest.startsWith('wait')) {
+        // In line at the door, no desk yet: the first one says how many wait.
+        if (a.dest === 'wait0') bubble = [sim.queue + ' in line', 'warn']
+      } else if (sec) {
+        working = sec.status === 'run'
         arms = sec.status === 'run' ? 'type' : sec.status === 'done' ? 'up' : sec.status === 'idle' ? 'mug' : 'down'
         smile = sec.status === 'done'
         const sb = secBubble(sec)
@@ -163,9 +176,6 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         // The Manager looking over their shoulder: the Manager's bubble shows, not theirs.
         if (sim.here('manager', 'patrol' + a.dest.slice(4))) bubble = null
       }
-    } else if (a.id.startsWith('wait')) {
-      lk = secLook(Number(a.id.slice(4)) + 1)
-      if (a.id === 'wait0') bubble = [sim.queue + ' in line', 'warn']
     } else if (a.id === 'janitor') {
       lk = LOOK.janitor
       arms = 'broom'
@@ -182,11 +192,16 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       const away = !!w && !atHome && sim.borrowed(role)
       if (w && (atHome || away)) {
         if (w.state === 'work') {
+          working = true
           arms = away ? 'phone' : role === 'archivist' ? (/^Search|^Find/.test(w.full) ? 'magnify' : 'folder') : role === 'courier' ? 'phone' : (WORK_ARMS[role] ?? 'type')
           bubble = told ? null : [life.hold(role, w.short, sim.tick), '']
         } else if (w.state === 'error') bubble = told ? null : [life.hold(role, w.short, sim.tick), 'bad']
-        else arms = 'mug'
+        // Just finished: a sip at the station until they report or take up their own things.
+        else arms = act ? BREAK_ARMS[act] : 'mug'
       } else if (act) arms = BREAK_ARMS[act]
+      // Reporting where they are (the Manager is away): on the phone.
+      if (act === 'report' && !REPORT_AT.includes(a.dest)) arms = 'phone'
+      if (act === 'stretch' && !walking) eyes = 'closed'
       if (walking && act === 'mug') arms = 'walkMug'
       const ic = here ? life.icon(sim, v, role) : null
       if (ic) icons.push([px + 3, top - 1, ic])
@@ -195,7 +210,13 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     if (a.leaving) bubble = null
     const person = lk
     const pose = walking && arms !== 'walkMug' ? 'walk' : arms
-    at(sitting ? spot.feet : py, () => drawPerson(fb, px, top, person, { seat: sitting, f: walking ? tick : F + a.id.length, arms: pose, smile, seed: a.id.length }))
+    const busyNow = working && here
+    // At work everything moves every tick (8 a second); otherwise at the calm 4; after Esc nothing moves.
+    const pf = v.frozen ? F + a.id.length : walking || busyNow ? tick : F + a.id.length
+    at(sitting ? spot.feet : py, () => {
+      drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow })
+      if (busyNow) workFx(fb, px, top, pf)
+    })
     if (here && bubble && a.id !== 'janitor') bubbles.push([spot.x + 3, bubbleRow(spot.feet), bubble[0], bubble[1]])
   }
 

@@ -98,7 +98,7 @@ async function onTick($: EngineInterface): Promise<void> {
     const cam = mounted.shape.kind === 'cam' ? mounted.shape : null
     if (cam) camera.step(v, cam.cols, cam.rows * 2, bigSim)
     // The list changes with time as well (a break changes, "Done!" fades): redraw the pane then.
-    const key = listKey(lines(v, bigSim.seated(), bigSim.breakLine(v)))
+    const key = listKey(lines(v, bigSim.seated(), bigSim.breakLine(v), id => bigSim.lookOf(id)))
     if (key !== lastList) {
       lastList = key
       $.ui.invalidate('ui.render')
@@ -213,7 +213,7 @@ export const register: Register = on => {
         const role = label.who
         // The Planner writes the to-do list; the board shows it.
         const todos = tool === 'TodoWrite' ? todosFrom(input) : undefined
-        await change($, (o, now) => startJob(todos === undefined ? o : { ...o, todos }, { id, role, short: label.short, full: label.full, startedAt: now }))
+        await change($, (o, now) => startJob(todos === undefined ? o : { ...o, todos }, { id, role, short: label.short, full: label.full, startedAt: now, ...(label.brief ? { brief: true } : {}) }))
       }
     } catch {
       // The office misses this call; the tool runs anyway.
@@ -371,7 +371,7 @@ export const register: Register = on => {
     if (shape) bigSim.sync(v)
     // A new pane: the camera starts where it should be looking.
     if (shape?.kind === 'cam') camera.step(v, shape.cols, shape.rows * 2, bigSim)
-    const all = lines(v, shape ? bigSim.seated() : undefined, shape ? bigSim.breakLine(v) : null)
+    const all = lines(v, shape ? bigSim.seated() : undefined, shape ? bigSim.breakLine(v) : null, shape ? id => bigSim.lookOf(id) : undefined)
     lastList = listKey(all)
     const beside = shape?.kind === 'cam' && shape.beside
     const shown = fitLines(all, Math.max(1, beside ? rows : rows - (shape?.rows ?? 0)))
