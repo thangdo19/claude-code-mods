@@ -5,11 +5,11 @@
 import type { Role, Sec } from '../types'
 import {
   board, boardWords, cabinet, clock, coffeeMachine, desk, deskPhone, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, plate,
-  rack, room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type BoardItem, type Look,
+  rack, room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type BoardItem, type Face, type Look,
 } from './big-sprites'
-import type { Tone, View } from './office'
+import { ROLES, type Tone, type View } from './office'
 import { DESK_OWNER, DESKS, isRole, SPOTS, type BigSim } from './big-walk'
-import { HOME, managerFree, meeting, type ActKind, type Icon } from './life'
+import { HOME, managerFree, meeting, type ActKind, type Icon, type Who } from './life'
 
 export const BIG_COLS = 64
 export const BIG_ROWS = 31
@@ -38,6 +38,16 @@ const REPORT_AT = ['rep0', 'rep1']
 /** How each worker holds their arms on a job. */
 const WORK_ARMS: Partial<Record<Role, Arms>> = { typist: 'type', it: 'type', researcher: 'type', planner: 'type', librarian: 'folder' }
 
+/**
+ * The walk step (approved round 5): one step per frame drawn, at 8 frames a second (fullscreen) and at 4 (above the
+ * prompt, every other tick): a stroll steps every 2 ticks, hurrying every tick (at 4 a second: foot, foot). The old
+ * steps went by distance or the tick, so hurrying legs froze above the prompt and strollers limped.
+ */
+export const walkStep = (a: { speed: number; walked: number }): number => (a.speed >= 2.5 ? a.walked : a.walked >> 1)
+
+/** The kinds of break where two talk to each other. */
+const CHATS: readonly ActKind[] = ['chat', 'visit', 'host']
+
 /** The text row of a bubble over someone whose feet are on pixel row `feet`. */
 const bubbleRow = (feet: number) => Math.max(1, Math.floor((feet - 17) / 2))
 
@@ -51,8 +61,28 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const busy = (r: Role) => v.workers[r]?.state === 'work'
   const life = sim.life
   const hereAt = (spot: string) => [...sim.actors.values()].some(a => a.dest === spot && a.arrivedAt >= 0 && !a.leaving)
-  /** Walking legs: with the distance walked for a slow stroll (no skating), else every tick. */
-  const legs = (a: { speed: number; t: number }) => (a.speed < 2 ? Math.floor(a.t / 2) : tick)
+  /** Taking turns to talk (approved round 5): chat partners swap every 2 s, huddlers too; a report or dictating just talks. */
+  const talkOf = (id: Who): 'speak' | 'listen' => {
+    const act = life.acts.get(id)
+    const slot = sim.tick >> 4
+    if (act?.partner && CHATS.includes(act.kind)) return (slot % 2 === 0) === id < act.partner ? 'speak' : 'listen'
+    if (act?.kind === 'huddle') {
+      const hs = ROLES.filter(r => life.acts.get(r)?.kind === 'huddle')
+      return hs.length > 1 ? (hs[slot % hs.length] === id ? 'speak' : 'listen') : slot % 2 ? 'listen' : 'speak'
+    }
+    return 'speak'
+  }
+  /** Talking at rest, they turn to whoever they talk to (approved round 5): each other, or the Manager at the desk. */
+  const faceTo = (id: Who, dest: string, px: number): Face => {
+    const act = life.acts.get(id)
+    if (!act) return 'down'
+    if ((act.kind === 'report' || act.kind === 'huddle') && REPORT_AT.includes(dest)) return px < (SPOTS.chair?.x ?? px) ? 'right' : 'left'
+    if (!act.partner || !CHATS.includes(act.kind)) return 'down'
+    const m = sim.actors.get(act.partner)
+    if (!m || m.arrivedAt < 0) return 'down'
+    const mx = sim.at(m)[0]
+    return mx > px ? 'right' : mx < px ? 'left' : 'down'
+  }
   /** The Courier on the desk phone (set below, drawn with the desk). */
   let onCall = false
 
@@ -168,7 +198,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       smile ||= v.mood === 'done' || (seat && REPORT_AT.some(hereAt))
       const key = seat ? 42 : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
-      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? legs(a) : F, arms: pose, eyes, smile }))
+      const face = walking ? sim.facing(a) : act ? faceTo('manager', a.dest, px) : 'down'
+      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager') }))
       const b = MANAGER_BUBBLE[v.mood]
       if (seat) {
         if (napping) at(99, () => zzz(fb, F))
@@ -249,9 +280,11 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const pose = walking && arms !== 'walkMug' && arms !== 'walkBroom' ? 'walk' : arms
     const busyNow = working && here
     // At work everything moves every tick (8 a second); otherwise at the calm 4; after Esc nothing moves.
-    const pf = v.frozen ? F + a.id.length : walking ? legs(a) : busyNow ? tick : F + a.id.length
+    const pf = v.frozen ? F + a.id.length : walking ? walkStep(a) : busyNow ? tick : F + a.id.length
+    const face = walking ? sim.facing(a) : isRole(a.id) ? faceTo(a.id, a.dest, px) : 'down'
+    const talk = pose === 'talk' && isRole(a.id) ? talkOf(a.id) : undefined
     at(sitting ? spot.feet : py, () => {
-      drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow })
+      drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow, face, talk })
       if (busyNow) workFx(fb, px, top, pf)
     })
     // The IT girl's bubble starts right of the board, so it never covers the to-do words.
