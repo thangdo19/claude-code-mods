@@ -34,7 +34,8 @@ export const SPOTS: Record<string, Spot> = {
   door: spot(DOOR),
   archivist: spot([24, 21]),
   it: spot([44, 21]),
-  courier: spot([3, 42], [], true),
+  // (2 px in from the desk's end: the globe stands left of the Courier, the desk phone right.)
+  courier: spot([5, 42], [], true),
   typist: spot([51, 42], [], true),
   desk0: desk(0),
   desk1: desk(1),
@@ -440,9 +441,9 @@ export class BigSim {
     return this.desks.map(id => (id && !this.leaving.has(id) ? id : null))
   }
 
-  /** Who is on a break (or in the meeting) and doing what, for the list. */
-  breakLine(v: View): { who: string; what: string } | null {
-    return this.life.breakLine(this, v)
+  /** What staff member `r` (no job now) is doing, for their line in the list. */
+  doing(v: View, r: Role): string {
+    return this.life.doing(this, v, r)
   }
 }
 

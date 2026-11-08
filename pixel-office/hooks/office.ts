@@ -1,11 +1,11 @@
 // The office's state: changes for each event, and what it looks like at a given moment.
 // Pure: no Claude Code calls, easy to test.
 
-import type { Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
+import type { Done, Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
 import { fmtDuration, plain } from './labels'
 
 export const EMPTY: Office = {
-  mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, bg: [],
+  mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, recent: [], bg: [],
   secs: [], todos: null, compacting: false, lastActivity: 0, order: 0,
 }
 
@@ -27,6 +27,14 @@ export const NIGHT_MS = 10 * 60_000
 export const STALE_MS = 10 * 60_000
 /** The most secretaries kept on record. */
 const MAX_SECS = 60
+/**
+ * Human pace (approved round 4): a tool call takes a tenth of a second, too quick to see. The picture and the list
+ * show each job at least MIN_SHOW; a burst is worked one after another, never more than MAX_LAG behind.
+ */
+export const MIN_SHOW = 2_500
+export const MAX_LAG = 6_000
+/** Finished calls kept for the pace. */
+const MAX_RECENT = 30
 
 export const ROLES: readonly Role[] = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian']
 export const ROLE_NAME: Record<Role, string> = {
@@ -73,6 +81,7 @@ export const startTurn = (o: Office, now: number): Office => ({
   lastActivity: now,
   jobs: [],
   last: {},
+  recent: [],
   secs: o.secs.filter(s => s.status === 'run' || s.status === 'idle'),
 })
 
@@ -97,7 +106,37 @@ export const endJob = (o: Office, id: string, role: Role, last: LastJob): Office
     const prev = o.last[role]
     done = prev && prev.endedAt >= briefEnd(job) ? prev : { ...last, endedAt: briefEnd(job) }
   }
-  return { ...o, jobs: o.jobs.filter(j => j.id !== id), last: { ...o.last, [role]: done }, lastActivity: last.endedAt }
+  // (A briefing is not paced: it is busy BRIEF_MS anyway.)
+  const recent: Done[] = job?.brief
+    ? (o.recent ?? [])
+    : [...(o.recent ?? []), { role, short: last.short, full: last.full, startedAt: job?.startedAt ?? last.endedAt, endedAt: last.endedAt }].slice(-MAX_RECENT)
+  return { ...o, jobs: o.jobs.filter(j => j.id !== id), last: { ...o.last, [role]: done }, recent, lastActivity: last.endedAt }
+}
+
+/** A job as shown: from `s` to `e`. */
+type Shown = { short: string; full: string; s: number; e: number }
+
+/** A role's jobs (this turn's finished ones and those running) as shown at a human pace. */
+function paced(o: Office, role: Role, now: number): Shown[] {
+  // The turn is over: what was left ends with it (never before the job itself did).
+  const cut = o.turnActive ? Infinity : o.moodAt
+  const all = [
+    ...(o.recent ?? []).filter(d => d.role === role).map(d => ({ short: d.short, full: d.full, start: d.startedAt, end: d.endedAt })),
+    ...o.jobs.filter(j => j.role === role && !j.brief && now - j.startedAt < STALE_MS).map(j => ({ short: j.short, full: j.full, start: j.startedAt, end: Infinity })),
+  ].sort((a, b) => a.start - b.start)
+  let free = -Infinity
+  let busy = -Infinity
+  const out: Shown[] = []
+  for (const j of all) {
+    // Started while another really ran: at the same time ("x3"). Else after the one before, but never more than
+    // MAX_LAG late (then they show at once: "x2").
+    const s = j.start < busy ? j.start : Math.max(j.start, Math.min(free, j.start + MAX_LAG))
+    const e = Math.min(Math.max(j.end, s + MIN_SHOW), Math.max(cut, j.end))
+    free = Math.max(free, e)
+    busy = Math.max(busy, j.end)
+    out.push({ short: j.short, full: j.full, s, e })
+  }
+  return out
 }
 
 export const addSec = (o: Office, sec: Omit<Sec, 'order'>): Office => {
@@ -224,6 +263,20 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
     } else if (last && now - last.endedAt < LINGER_MS) {
       workers[role] = { role, state: 'linger', short: '', full: '✓ ' + last.full, jobs: [], since: last.endedAt }
     }
+    // The human pace: each job shows a while, a burst one after another. A failure shows at once, as it is; so does a
+    // briefing (busy BRIEF_MS anyway).
+    const real = workers[role]
+    if (real?.state === 'error' || jobs.some(j => j.brief)) continue
+    const shown = paced(o, role, now)
+    const on = shown.filter(j => j.s <= now && now < j.e)
+    const top = on[on.length - 1]
+    const ended = shown.filter(j => j.e <= now).reduce<Shown | null>((a, j) => (a && a.e >= j.e ? a : j), null)
+    if (top) {
+      const many = (s: string) => ascii(s, 10 - (' x' + on.length).length) + ' x' + on.length
+      workers[role] = { role, state: 'work', short: on.length < 2 ? top.short : many(top.short), full: top.full, jobs: on.map(j => j.full), since: Math.min(...on.map(j => j.s)) }
+    } else if (ended && now - ended.e < LINGER_MS && !(real && real.since > ended.e))
+      workers[role] = { role, state: 'linger', short: '', full: '✓ ' + ended.full, jobs: [], since: ended.e }
+    // (Else as it really is: nothing, or a briefing that finished later.)
   }
 
   // Claude writes its reply: the Manager dictates, the Typist types it (unless busy with a file).
@@ -283,49 +336,65 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
 
 /* ===== the list under the office ===== */
 
-export type Line = { dot: string; who: string; what: string; tone: Tone }
+/**
+ * One row of the list. For when rows run out (see fitRows): `rank` — how much it matters, kept first (0 the Manager,
+ * 1 a failure, 2 at work, 3 waiting or cleaning, 4 just done, 5 free, 6 background and the to-do count); `free` — a
+ * staff member with no job (their name), who may share one line with the others (`group`: where they are, in a
+ * word); `sub` — one of a worker's several jobs, and `merged` — the worker's line with all of them on it.
+ */
+export type Line = { dot: string; who: string; what: string; tone: Tone; rank?: number; free?: string; group?: string; sub?: boolean; merged?: string }
 
 const secTone = (s: Sec): Tone => (s.status === 'done' ? 'good' : s.status === 'fail' ? 'bad' : s.status === 'idle' ? 'warn' : '')
+const secRank = (s: Sec): number => (s.status === 'run' ? 2 : s.status === 'fail' ? 1 : 4)
 const secWhat = (s: Sec): string =>
   s.name + ' · ' + (s.status === 'done' ? '✓ done: ' + s.task : s.status === 'fail' ? '✗ stopped: ' + s.task : s.status === 'idle' ? 'waiting for a message' : s.full)
 
+/** Where the staff with no job are, in a word, when the list can't say what each one does. */
+export function freeWords(v: View): string {
+  if (v.janitor) return 'stepped out'
+  if (v.night) return 'gone home'
+  if (v.planning && ['plan', 'permission', 'ask'].includes(v.mood)) return 'at the board'
+  return ['think', 'write', 'work', 'permission', 'ask', 'plan'].includes(v.mood) ? 'at their desks' : 'on a break'
+}
+
 /**
- * One line per person, busiest first: the Manager, the workers, the janitor, the
- * secretaries at desks, the line at the door, the to-do list, who is on a break.
+ * The list (approved round 4: "Everyone, fixed order"): the Manager, then every staff member on their own line, always,
+ * in the same order — their job, what they just did, or what they do meanwhile (`doing`; without it, `freeWords`) —
+ * then the Janitor, the agents at desks, the line at the door, the to-do count.
  * `seated` is the secretaries at desks in desk order; without it the first four are. `lookOf` gives an agent's
  * look in the picture, so their dot matches their clothes.
  */
-export function lines(v: View, seated?: readonly (string | null)[], breakLine?: { who: string; what: string } | null, lookOf?: (id: string) => number | undefined): Line[] {
-  const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone }]
-  const order: Record<Worker['state'], number> = { work: 0, error: 1, linger: 2 }
-  const ws = ROLES.flatMap(r => (v.workers[r] ? [v.workers[r]!] : [])).sort((a, b) => order[a.state] - order[b.state])
-  for (const w of ws) {
-    if (w.state === 'work' && w.jobs.length > 1) {
-      out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.jobs.length + ' at once', tone: '' })
-      w.jobs.slice(0, 3).forEach(j => out.push({ dot: '', who: '', what: '└ ' + j, tone: '' }))
-      if (w.jobs.length > 3) out.push({ dot: '', who: '', what: '└ +' + (w.jobs.length - 3) + ' more', tone: 'idle' })
-    } else out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'linger' ? 'idle' : '' })
+export function lines(v: View, seated?: readonly (string | null)[], doing?: (r: Role) => string, lookOf?: (id: string) => number | undefined): Line[] {
+  const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone, rank: 0 }]
+  for (const r of ROLES) {
+    const w = v.workers[r]
+    if (!w) out.push({ dot: DOT[r], who: ROLE_NAME[r], what: doing?.(r) ?? freeWords(v), tone: 'idle', rank: 5, free: ROLE_NAME[r], group: freeWords(v) })
+    else if (w.state === 'work' && w.jobs.length > 1) {
+      out.push({ dot: DOT[r], who: ROLE_NAME[r], what: w.jobs.length + ' at once', tone: '', rank: 2, merged: w.jobs.length + ' at once: ' + w.jobs.join(' · ') })
+      w.jobs.slice(0, 3).forEach(j => out.push({ dot: '', who: '', what: '└ ' + j, tone: '', rank: 2, sub: true }))
+      if (w.jobs.length > 3) out.push({ dot: '', who: '', what: '└ +' + (w.jobs.length - 3) + ' more', tone: 'idle', rank: 2, sub: true })
+    } else out.push({ dot: DOT[r], who: ROLE_NAME[r], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'linger' ? 'idle' : '', rank: w.state === 'error' ? 1 : w.state === 'linger' ? 4 : 2 })
+    if (r === 'it' && v.bg.length) out.push({ dot: '', who: '', what: '└ ' + plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle', rank: 6 })
   }
-  if (v.bg.length) out.push({ dot: v.workers.it ? '' : DOT.it, who: v.workers.it ? '' : 'IT tech', what: plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle' })
-  if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '' })
+  if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '', rank: 3 })
   const atDesk = seated ? v.secs.filter(s => seated.includes(s.id)) : v.secs.slice(0, 4)
   const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : atDesk.indexOf(s))
-  for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b))) out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s) })
+  for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b)))
+    out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s), rank: secRank(s) })
   const waiting = v.secs.length - atDesk.length
-  if (waiting > 0) out.push({ dot: DOT.wait, who: 'In line', what: plural(waiting, 'agent waits', 'agents wait') + ' for a free desk', tone: 'warn' })
+  if (waiting > 0) out.push({ dot: DOT.wait, who: 'In line', what: plural(waiting, 'agent waits', 'agents wait') + ' for a free desk', tone: 'warn', rank: 3 })
   if (v.todos && v.todos.length) {
     const done = v.todos.filter(t => t.status === 'completed').length
     const now = v.todos.find(t => t.status === 'in_progress')
-    out.push({ dot: '', who: 'To-do', what: done + '/' + v.todos.length + (now ? ' · ' + now.text : ''), tone: 'idle' })
+    out.push({ dot: '', who: 'To-do', what: done + '/' + v.todos.length + (now ? ' · ' + now.text : ''), tone: 'idle', rank: 6 })
   }
-  if (breakLine) out.push({ dot: '', who: breakLine.who, what: breakLine.what, tone: 'idle' })
   return out
 }
 
 /* ===== the list, wrapped to the pane ===== */
 
-/** The name column: always this wide (it never shrinks for a long line). */
-export const WHO_W = 10
+/** The name column: always this wide (it never shrinks for a long line); "Researcher" and a space. */
+export const WHO_W = 11
 /** The dot column ("● "). */
 export const DOT_W = 2
 /** A long line takes at most this many rows. */
@@ -359,9 +428,9 @@ const take = (s: string, n: number): string => {
 
 /**
  * One list line as rows of a list `width` cells wide: the words go on below, under the words (not under the
- * name), breaking after a space or a "/" in a path, never inside a name; at most three rows, the last ending "…".
+ * name), breaking after a space or a "/" in a path, never inside a name; at most `most` rows (3), the last ending "…".
  */
-export function wrapLine(l: Line, width: number): Line[] {
+export function wrapLine(l: Line, width: number, most = MOST_ROWS): Line[] {
   const room = Math.max(8, width - DOT_W - WHO_W)
   const rows: string[] = []
   let cur = ''
@@ -380,25 +449,72 @@ export function wrapLine(l: Line, width: number): Line[] {
     }
   }
   if (cur.trimEnd() || !rows.length) rows.push(cur.trimEnd())
-  if (rows.length > MOST_ROWS) {
-    rows.length = MOST_ROWS
-    rows[MOST_ROWS - 1] = take(rows[MOST_ROWS - 1]!, room - 2).trimEnd() + ' …'
+  if (rows.length > most) {
+    rows.length = most
+    rows[most - 1] = take(rows[most - 1]!, room - 2).trimEnd() + ' …'
   }
   return rows.map((what, i) => (i ? { dot: '', who: '', what, tone: l.tone } : { ...l, what }))
 }
 
-/** The lines as rows of a list `width` wide, whole lines only, in `max` rows; the last row says how many were left out. */
+/** Names that fit `room` cells: "Archivist, Typist +3". */
+function nameList(names: string[], room: number): string {
+  for (let k = names.length; k > 0; k--) {
+    const s = names.slice(0, k).join(', ') + (k < names.length ? ' +' + (names.length - k) : '')
+    if (textWidth(s) <= room) return s
+  }
+  return '+' + names.length
+}
+
+/**
+ * The lines as rows of a list `width` wide, in at most `max` rows. Everyone keeps their own line as long as at all
+ * possible; with too few rows, step by step:
+ *  1. long lines wrap to three rows, then two, then one (cut with "…"; the Manager keeps two);
+ *  2. a worker's several jobs share their one line ("3 at once: Read a.ts · Read b.ts");
+ *  3. the staff with no job share one line that still names them ("Others  Courier, Planner · on a break", or
+ *     "Staff  all gone home");
+ *  4. the least important go (to-do, background, the free, just done …; never the Manager), and the last row names
+ *     who is left out ("+2 more  To-do, Desk 4").
+ */
 export function fitRows(all: Line[], width: number, max: number): Line[] {
   if (max <= 0) return []
-  const items = all.map(l => wrapLine(l, width))
-  if (items.reduce((n, r) => n + r.length, 0) <= max) return items.flat()
-  const out: Line[] = []
-  let k = 0
-  for (; k < items.length && out.length + items[k]!.length <= max - 1; k++) out.push(...items[k]!)
-  // Not even the first line fits whole: as much of it as fits.
-  if (!k && max > 1) {
-    out.push(...items[0]!.slice(0, max - 1))
-    k = 1
+  const lay = (ls: Line[], most: number) => ls.flatMap(l => wrapLine(l, width, l.rank === 0 ? Math.max(most, 2) : most))
+  for (const most of [MOST_ROWS, 2, 1]) {
+    const rows = lay(all, most)
+    if (rows.length <= max) return rows
   }
-  return [...out, { dot: '', who: '', what: '+' + (all.length - k) + ' more', tone: 'idle' }]
+  let ls = all.filter(l => !l.sub).map(l => (l.merged ? { ...l, what: l.merged } : l))
+  if (lay(ls, 1).length <= max) return lay(ls, 1)
+  const free = ls.filter(l => l.free)
+  if (free.length > 1) {
+    const room = Math.max(8, width - DOT_W - WHO_W)
+    const where = free.every(l => l.what === free[0]!.what) ? free[0]!.what : (free[0]!.group ?? 'free')
+    const everyone = free.length === ROLES.length
+    const names = free.map(l => l.free!)
+    // Who comes first: every name with where they are, else every name, else as many names as fit ("+2").
+    const list = names.join(', ')
+    const what = everyone ? 'all ' + where : textWidth(list + ' · ' + where) <= room ? list + ' · ' + where : textWidth(list) <= room ? list : nameList(names, room)
+    const one: Line = { dot: '', who: everyone ? 'Staff' : 'Others', what, tone: 'idle', rank: 5, free: list }
+    const first = ls.indexOf(free[0]!)
+    ls = ls.filter(l => !l.free)
+    ls.splice(first, 0, one)
+  }
+  const rows = lay(ls, 1)
+  if (rows.length <= max) return rows
+  if (max === 1) return rows.slice(0, 1)
+  // The most important first (the Manager, failures, work …), each in its own place; the last row for who is left out.
+  const order = ls.map((_, i) => i).sort((a, b) => (ls[a]!.rank ?? 2) - (ls[b]!.rank ?? 2) || a - b)
+  const keep = new Map<number, number>()
+  let used = 1
+  for (const i of order) {
+    const l = ls[i]!
+    // (The Manager keeps a second row only if there is room for it.)
+    const n = Math.min(wrapLine(l, width, l.rank === 0 ? 2 : 1).length, max - used)
+    if (n < 1) continue
+    keep.set(i, n)
+    used += n
+  }
+  const kept = ls.flatMap((l, i) => (keep.has(i) ? wrapLine(l, width, keep.get(i)) : []))
+  const gone = ls.filter((_, i) => !keep.has(i)).flatMap(l => (l.free ? l.free.split(', ') : l.who ? [l.who] : ['background']))
+  if (!gone.length) return kept
+  return [...kept, { dot: '', who: '+' + gone.length + ' more', what: nameList(gone, Math.max(8, width - DOT_W - WHO_W)), tone: 'idle', rank: 6 }]
 }

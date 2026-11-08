@@ -9,8 +9,8 @@ import { describe as label, mask } from '../hooks/labels'
 import { Camera, CAM_COLS, CAM_ROWS, focusOf } from '../hooks/camera'
 import { REPORT_AFTER } from '../hooks/life'
 import {
-  addSec, addTask, ascii, BRIEF_MS, DONE_MS, DOT, EMPTY, endJob, endTurn, fitRows, LINGER_MS, lines, NIGHT_MS, patchTask, setMood, startJob, startTurn, STOP_MS, tasksFrom,
-  textWidth, view, WHO_W, wrapLine, type Line, type View,
+  addSec, addTask, ascii, BRIEF_MS, DONE_MS, DOT, EMPTY, endJob, endTurn, fitRows, LINGER_MS, lines, MAX_LAG, MIN_SHOW, NIGHT_MS, patchTask, ROLE_NAME, ROLES,
+  setMood, startJob, startTurn, STOP_MS, tasksFrom, textWidth, view, WHO_W, wrapLine, type Line, type View,
 } from '../hooks/office'
 import type { Office } from '../types'
 
@@ -76,13 +76,30 @@ test('secrets in a command are hidden', async () => {
   expect(mask('gh auth login --with-token ghp_abcdefghijklmnop1234')).not.toContain('ghp_')
 })
 
-test('a worker with nothing left stays at their station a moment, then is on a break', async () => {
+test('a job shows at a human pace, a burst one after another; then the worker stays a moment, then is free', async () => {
   let o = startTurn(EMPTY, 0)
   o = startJob(o, { id: 't1', role: 'archivist', short: 'auth.ts', full: 'Read src/auth.ts', startedAt: 0 })
   expect(view(o, 10).workers.archivist?.state).toBe('work')
   o = endJob(o, 't1', 'archivist', { short: 'auth.ts', full: 'Read src/auth.ts', err: false, denied: false, endedAt: 100 })
-  expect(view(o, 200).workers.archivist?.state).toBe('linger')
-  expect(view(o, 100 + LINGER_MS + 1).workers.archivist).toBeUndefined()
+  // A tenth of a second of work shows MIN_SHOW.
+  expect(view(o, 200).workers.archivist?.state).toBe('work')
+  expect(view(o, MIN_SHOW + 1).workers.archivist).toMatchObject({ state: 'linger', since: MIN_SHOW })
+  expect(view(o, MIN_SHOW + LINGER_MS + 1).workers.archivist).toBeUndefined()
+  // Four quick reads: one after another, never more than MAX_LAG behind (then two at once).
+  let b = startTurn(EMPTY, 0)
+  ;['a.ts', 'b.ts', 'c.ts', 'd.ts'].forEach((f, i) => {
+    const j = { id: f, role: 'archivist' as const, short: f, full: 'Read ' + f, startedAt: i * 10 }
+    b = endJob(startJob(b, j), f, 'archivist', { short: f, full: j.full, err: false, denied: false, endedAt: i * 10 + 5 })
+  })
+  expect(view(b, 100).workers.archivist?.short).toBe('a.ts')
+  expect(view(b, MIN_SHOW + 100).workers.archivist?.short).toBe('b.ts')
+  expect(view(b, 2 * MIN_SHOW + 100).workers.archivist?.short).toBe('c.ts')
+  expect(view(b, MAX_LAG + 100).workers.archivist?.short).toBe('d.ts x2')
+  // The turn ends: what was left ends with it.
+  expect(view(endTurn(b, 'answer', false, 3_000, 3_000), 3_001).workers.archivist).toMatchObject({ state: 'linger', full: '✓ Read b.ts' })
+  // A failure shows at once.
+  const failed = endJob(startJob(startTurn(EMPTY, 0), { id: 'x', role: 'it', short: 'npm test', full: '$ npm test', startedAt: 0 }), 'x', 'it', { short: 'npm test', full: '$ npm test', err: true, denied: false, endedAt: 50 })
+  expect(view(failed, 60).workers.it?.state).toBe('error')
   const ended = endTurn(o, 'answer', false, 134_000, 300)
   expect(view(ended, 400).line).toBe('Done in 2m 14s')
   expect(view(ended, 300 + DONE_MS + 1).mood).toBe('idle')
@@ -148,7 +165,10 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
   // Placed at once after a reload: everyone at their own station.
   for (const r of ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian']) expect(sim.actors.has(r)).toBe(true)
   run(sim, day, 2, 400)
-  expect(sim.breakLine(view(day, 50_000))?.who).toBe('Break')
+  // Everyone has their own line in the list, saying what they do on their break.
+  const v = view(day, 50_000)
+  const ls = lines(v, sim.seated(), r => sim.doing(v, r))
+  for (const r of ROLES) expect(ls.filter(l => l.who === ROLE_NAME[r]).map(l => l.tone)).toEqual(['idle'])
   // A job: the Archivist goes to the cabinets.
   const busy = startJob(startTurn(day, 50_000), { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 50_000 })
   run(sim, busy, 50_000, 40)
@@ -162,18 +182,40 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
 const BREAK_SPOTS = ['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist']
 const STAFF = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian'] as const
 
-test('while Claude works the break is over: everyone at their own desk, doing their own things', async () => {
+test('while Claude works the break is over: everyone at their own desk at work of their own, or in a huddle', async () => {
   const sim = new BigSim()
   const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
   run(sim, day, 2, 400)
   const work = startTurn(day, 50_000)
   run(sim, work, 50_000, 80)
-  for (const r of STAFF) expect(sim.actors.get(r)!.dest).toBe(r === 'researcher' ? 'desk0' : r === 'planner' ? 'desk1' : r === 'librarian' ? 'desk2' : r)
-  expect(sim.breakLine(view(work, 60_000))?.who).toBe('Desks')
+  // (The Manager thinks: two come over to talk it over.)
+  const home = (r: string) => (r === 'researcher' ? 'desk0' : r === 'planner' ? 'desk1' : r === 'librarian' ? 'desk2' : r)
+  for (const r of STAFF) expect(sim.actors.get(r)!.dest).toBe(sim.life.activity(r) === 'huddle' ? sim.actors.get(r)!.dest : home(r))
+  expect(STAFF.filter(r => sim.life.activity(r) === 'huddle').map(r => sim.actors.get(r)!.dest).sort()).toEqual(['rep0', 'rep1'])
+  run(sim, setMood(work, 'work', 60_000), 60_000, 160)
+  expect(STAFF.filter(r => sim.life.activity(r) === 'own').length).toBeGreaterThanOrEqual(4)
   for (let i = 0; i < 400; i++) {
-    run(sim, work, 60_000 + i * 125, 1)
+    run(sim, work, 80_000 + i * 125, 1)
     for (const r of STAFF) expect(BREAK_SPOTS).not.toContain(sim.actors.get(r)!.dest)
   }
+})
+
+test('the Manager thinking a while calls two over to talk it over; a report always gets a spot', async () => {
+  const sim = new BigSim()
+  const o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  run(sim, o, 2, 120)
+  const huddlers = () => STAFF.filter(r => sim.life.activity(r) === 'huddle')
+  // Nobody worked yet: the Planner and the Archivist.
+  expect(huddlers()).toEqual(['archivist', 'planner'])
+  expect(sim.life.icon(sim, view(o, 15_000), 'archivist') ?? sim.life.icon(sim, view(o, 15_000), 'planner')).not.toBe(null)
+  const done = endJob(startJob(o, { id: 'e', role: 'typist', short: 'a.ts', full: 'Edit a.ts', startedAt: 15_000 }), 'e', 'typist', { short: 'a.ts', full: 'Edit a.ts', err: false, denied: false, endedAt: 15_100 })
+  let t = 15_000
+  while (sim.life.activity('typist') !== 'report' && t < 25_000) run(sim, done, (t += 125), 1)
+  expect(sim.actors.get('typist')!.dest.startsWith('rep')).toBe(true)
+  expect(huddlers().length).toBe(1)
+  // The thinking ends: back to their desks.
+  run(sim, setMood(done, 'work', 30_000), 30_000, 80)
+  expect(huddlers()).toEqual([])
 })
 
 test('Claude writing the reply: the Manager dictates, the Typist types it, then reports it once', async () => {
@@ -182,7 +224,7 @@ test('Claude writing the reply: the Manager dictates, the Typist types it, then 
   expect(lines(view(o, 2)).map(l => l.what)).toContain('Typing the reply')
   const sim = new BigSim()
   run(sim, o, 2, 40)
-  const after = setMood(o, 'think', 5_000)
+  const after = setMood(o, 'work', 5_000)
   run(sim, after, 5_000, 4)
   expect(sim.life.activity('typist')).not.toBe('report')
   run(sim, after, 5_000 + REPORT_AFTER, 2)
@@ -196,7 +238,8 @@ test('Claude writing the reply: the Manager dictates, the Typist types it, then 
 test('a finished worker reports to the Manager; a next job first means no report', async () => {
   const sim = new BigSim()
   const read = { id: 'r', role: 'archivist' as const, short: 'a.ts', full: 'Read a.ts', startedAt: 1_000 }
-  let o = startJob(startTurn({ ...EMPTY, lastActivity: 1 }, 1), read)
+  // (Calling tools, not thinking: no huddle at the report spots.)
+  let o = startJob(setMood(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'work', 1), read)
   run(sim, o, 1_000, 8)
   o = endJob(o, 'r', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 2_000 })
   // Another job within a second: straight to it, no report.
@@ -204,19 +247,21 @@ test('a finished worker reports to the Manager; a next job first means no report
   run(sim, next, 2_000, 8)
   expect(sim.life.activity('archivist')).toBe(null)
   const done = endJob(next, 'r2', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 3_000 })
-  run(sim, done, 3_000, 4 + REPORT_AFTER / 125)
+  // (At a human pace the second read shows from the end of the first, MIN_SHOW: the report comes after that.)
+  const shownEnd = 1_000 + 2 * MIN_SHOW
+  run(sim, done, 3_000, (shownEnd + REPORT_AFTER - 3_000) / 125 + 4)
   expect(sim.life.activity('archivist')).toBe('report')
   expect(sim.actors.get('archivist')!.dest).toBe('rep0')
-  run(sim, done, 4_500, 8)
+  run(sim, done, shownEnd + 2_000, 8)
   expect(sim.here('archivist', 'rep0')).toBe(true)
-  expect(sim.life.icon(sim, view(done, 5_500), 'archivist')).toBe('check')
-  run(sim, done, 5_500, 60)
+  expect(sim.life.icon(sim, view(done, shownEnd + 3_000), 'archivist')).toBe('check')
+  run(sim, done, shownEnd + 3_000, 60)
   expect(sim.actors.get('archivist')!.dest).toBe('archivist')
 })
 
 test('the Manager away from the desk: the report is called in from where the worker is', async () => {
   const sim = new BigSim()
-  let o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  let o = setMood(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'work', 1)
   // A slow job for the Courier: the Manager goes over to look.
   o = startJob(o, { id: 'w', role: 'courier', short: 'chrome', full: 'chrome: navigate', startedAt: 1 })
   run(sim, o, 2, 60)
@@ -224,7 +269,7 @@ test('the Manager away from the desk: the report is called in from where the wor
   o = startJob(o, { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 7_500 })
   run(sim, o, 7_500, 4)
   const done = endJob(o, 'r', 'archivist', { short: 'a.ts', full: 'Read a.ts', err: false, denied: false, endedAt: 8_000 })
-  run(sim, done, 8_000, 2 + REPORT_AFTER / 125)
+  run(sim, done, 8_000, 2 + (7_500 + MIN_SHOW + REPORT_AFTER - 8_000) / 125)
   expect(sim.life.activity('archivist')).toBe('report')
   expect(sim.actors.get('archivist')!.dest).toBe('archivist')
 })
@@ -235,14 +280,17 @@ test('plan mode: the Manager calls everyone free to the board', async () => {
   run(sim, o, 2, 200)
   expect(sim.here('manager', 'board')).toBe(true)
   expect(sim.here('typist', 'meet3')).toBe(true)
-  expect(sim.breakLine(view(o, 30_000))).toEqual({ who: 'Meeting', what: 'Everyone at the board' })
+  const v = view(o, 30_000)
+  const ls = lines(v, sim.seated(), r => sim.doing(v, r))
+  expect(ls.filter(l => l.free).map(l => l.what)).toEqual(ROLES.map(() => 'at the board'))
+  // Short of rows, they share one line.
+  expect(fitRows(ls, 40, 3).map(l => l.who + ': ' + l.what)).toEqual(['Manager: Planning (plan mode)', 'Staff: all at the board'])
 })
 
 test('between turns the Manager is on a break; at night the Manager naps at the desk', async () => {
   const sim = new BigSim()
   const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
   run(sim, day, 2, 600)
-  expect(sim.breakLine(view(day, 80_000))?.what).toContain('Manager')
   expect(sim.life.activity('manager')).not.toBe(null)
   run(sim, day, NIGHT_MS + 10, 200)
   expect(sim.here('manager', 'chair')).toBe(true)
@@ -406,23 +454,35 @@ test('the camera looks where things happen, glides there a row at a time, and sh
   expect(bigCells(shot).rows).toBe(16)
 })
 
-test('the list keeps its name column; long lines wrap under the words, whole lines fit the rows', async () => {
-  const L = (who: string, what: string): Line => ({ dot: '#fff', who, what, tone: '' })
+test('the list: everyone keeps a line; long lines wrap; short of rows it gives way step by step and names who is left out', async () => {
+  const L = (who: string, what: string, more: Partial<Line> = {}): Line => ({ dot: '#fff', who, what, tone: '', ...more })
+  const free = (who: string, what: string) => L(who, what, { tone: 'idle', rank: 5, free: who, group: 'on a break' })
   const all = [
-    L('Manager', 'Planning (plan mode)'),
-    L('Archivist', 'Read src/components/settings/NotificationPreferencesPanel.tsx'),
-    L('Break', 'Manager & Typist chatting · Archivist having a coffee · IT tech watering the plant · Courier on the phone · Researcher reading'),
+    L('Manager', 'Planning (plan mode)', { rank: 0 }),
+    L('Archivist', 'Read src/components/settings/NotificationPreferencesPanel.tsx', { rank: 2 }),
+    free('Typist', 'having a coffee'),
+    free('IT tech', 'chatting with the Courier'),
+    L('To-do', '1/3 · Fix it', { tone: 'idle', rank: 6 }),
   ]
   const rows = fitRows(all, 64, 10)
-  expect(rows.map(r => r.who)).toEqual(['Manager', 'Archivist', '', 'Break', '', ''])
+  expect(rows.map(r => r.who)).toEqual(['Manager', 'Archivist', '', 'Typist', 'IT tech', 'To-do'])
   // A path breaks after a "/", never inside a name; no row is wider than the room beside the names.
   expect(rows[1]!.what).toBe('Read src/components/settings/')
   expect(rows[2]!.what).toBe('NotificationPreferencesPanel.tsx')
   for (const r of rows) expect(textWidth(r.what)).toBeLessThanOrEqual(64 - 2 - WHO_W)
-  // Too few rows: only whole lines, and the last row says how many were left out.
-  expect(fitRows(all, 64, 4).map(r => r.what)).toEqual(['Planning (plan mode)', 'Read src/components/settings/', 'NotificationPreferencesPanel.tsx', '+1 more'])
+  const fit = (n: number) => fitRows(all, 64, n).map(r => r.who + ': ' + r.what)
+  // 1. Short of rows: a long line gets one row, cut with "…"; everyone still has their own line.
+  expect(fit(5)).toEqual(['Manager: Planning (plan mode)', 'Archivist: Read src/components/settings/ …', 'Typist: having a coffee', 'IT tech: chatting with the Courier', 'To-do: 1/3 · Fix it'])
+  // 2. Fewer: the free share one line that still names them.
+  expect(fit(4)[2]).toBe('Others: Typist, IT tech · on a break')
+  // 3. Fewer still: the least important go and the last row names them; the Manager always stays.
+  expect(fit(3)).toEqual(['Manager: Planning (plan mode)', 'Archivist: Read src/components/settings/ …', '+3 more: Typist, IT tech, To-do'])
+  expect(fit(1)).toEqual(['Manager: Planning (plan mode)'])
+  // A worker's several jobs share one line before anyone else gives way.
+  const many = [all[0]!, L('IT tech', '2 at once', { rank: 2, merged: '2 at once: $ npm test · $ npm run lint' }), L('', '└ $ npm test', { rank: 2, sub: true }), L('', '└ $ npm run lint', { rank: 2, sub: true }), free('Typist', 'proofreading'), free('Courier', 'sorting the mail')]
+  expect(fitRows(many, 64, 4).map(r => r.who)).toEqual(['Manager', 'IT tech', 'Typist', 'Courier'])
   // Very long: three rows at most, the last ending with an ellipsis.
-  const long = wrapLine(L('Desks', 'word '.repeat(80)), 40)
+  const long = wrapLine(L('Desk 1', 'word '.repeat(80)), 40)
   expect(long.length).toBe(3)
   expect(long[2]!.what.endsWith('…')).toBe(true)
 })
@@ -505,7 +565,7 @@ test('compacting: staff and the Manager step out, a busy agent keeps its desk, t
   }
   expect([...sim.actors.keys()].sort()).toEqual(['janitor', 'sec:a'])
   expect([...stops].filter(d => d.startsWith('sweep')).length).toBeGreaterThanOrEqual(6)
-  expect(sim.breakLine(view(clean, 90_000))?.who).toBe('Out')
+  expect(sim.doing(view(clean, 90_000), 'typist')).toBe('stepped out while the Janitor cleans')
   // Done: everyone back, the waiting teammate gets a desk again; the Janitor is gone.
   run(sim, o, 90_000, 400)
   expect([...sim.actors.keys()].sort()).toEqual(['archivist', 'courier', 'it', 'librarian', 'manager', 'planner', 'researcher', 'sec:a', 'sec:b', 'typist'])

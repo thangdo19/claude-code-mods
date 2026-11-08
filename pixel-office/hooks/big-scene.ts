@@ -4,7 +4,7 @@
 
 import type { Role, Sec } from '../types'
 import {
-  board, boardWords, cabinet, clock, coffeeMachine, desk, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, plate,
+  board, boardWords, cabinet, clock, coffeeMachine, desk, deskPhone, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, plate,
   rack, room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type BoardItem, type Look,
 } from './big-sprites'
 import type { Tone, View } from './office'
@@ -24,8 +24,10 @@ const URGENT = new Set(['permission', 'ask', 'done', 'stopped', 'hold'])
 /** How someone on a break holds their arms. */
 const BREAK_ARMS: Record<ActKind, Arms> = {
   sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
-  read: 'read', tidy: 'tidy', stretch: 'stretch', report: 'talk', tick: 'point',
+  stretch: 'stretch', report: 'talk', tick: 'point', own: 'type', huddle: 'talk',
 }
+/** Own work at the station (approved round 4): files in hand, the rack's keys, sorting the mail, the keys at the desk. */
+const OWN_ARMS: Record<Role, Arms> = { archivist: 'folder', it: 'type', courier: 'tidy', typist: 'type', researcher: 'type', planner: 'type', librarian: 'type' }
 /** What each station does, on its brass sign (approved: "Signs only"); a front desk an agent sits at says AGENT. */
 const SIGN: Record<Role, string> = { archivist: 'FILES', it: 'BASH', courier: 'MAIL', typist: 'EDIT', researcher: 'WEB', planner: 'PLAN', librarian: 'SKILL' }
 const DESK_SIGN = ['WEB', 'PLAN', 'SKILL', 'AGENT']
@@ -51,6 +53,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const hereAt = (spot: string) => [...sim.actors.values()].some(a => a.dest === spot && a.arrivedAt >= 0 && !a.leaving)
   /** Walking legs: with the distance walked for a slow stroll (no skating), else every tick. */
   const legs = (a: { speed: number; t: number }) => (a.speed < 2 ? Math.floor(a.t / 2) : tick)
+  /** The Courier on the desk phone (set below, drawn with the desk). */
+  let onCall = false
 
   room(fb)
   door(fb, 2, 4, 8, 17, sim.doorOpen())
@@ -83,13 +87,15 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     for (const [x, y] of [[31, 30], [29, 32], [33, 32], [31, 34], [29, 36], [33, 36]] as const) fb.s(x, y, '#4a2a1e')
   })
   at(41.5, () => {
-    officeChair(fb, 2, 33, 9, 9)
+    officeChair(fb, 4, 33, 9, 9)
     officeChair(fb, 50, 33, 9, 9)
   })
   at(44.5, () => {
     desk(fb, 0, 39, 16, 6)
     plate(sc, 8, 21, SIGN.courier)
-    globe(fb, 10, 32, busy('courier'), F)
+    // The globe at the desk's left end, the red desk phone right of the Courier.
+    globe(fb, 0, 32, busy('courier'), F)
+    deskPhone(fb, 12, 36, onCall)
     desk(fb, 23, 39, 20, 6)
     fb.r(30, 41, 5, 1, P.gold)
     const gaming = managerFree(v) && life.activity('manager') === 'game' && sim.here('manager', 'chair')
@@ -109,7 +115,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const sec = id ? v.secs.find(s => s.id === id) : undefined
     const here = !!id && sim.here('sec:' + id, 'desk' + i)
     const owner = DESK_OWNER[i]
-    const ownerWorks = !id && !!owner && v.workers[owner]?.state === 'work' && sim.here(owner, 'desk' + i)
+    // (Own work at the desk turns the monitor on too.)
+    const ownerWorks = !id && !!owner && (v.workers[owner]?.state === 'work' || life.activity(owner) === 'own') && sim.here(owner, 'desk' + i)
     at(57.5, () => officeChair(fb, dx + 1, 49, 9, 9))
     at(61.5, () => {
       desk(fb, dx, 55, 15, 7)
@@ -222,10 +229,17 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         // Just finished: a sip at the station until they report or take up their own things.
         else arms = act ? BREAK_ARMS[act] : 'mug'
       } else if (act) arms = BREAK_ARMS[act]
+      // Own work: their own tools at their station; at a spare spot (an agent has the desk), notes in hand.
+      if (act === 'own' && !(w && w.state !== 'linger')) arms = atHome ? OWN_ARMS[role] : 'read'
       // Reporting where they are (the Manager is away): on the phone.
       if (act === 'report' && !REPORT_AT.includes(a.dest)) arms = 'phone'
       if (act === 'stretch' && !walking) eyes = 'closed'
       if (walking && act === 'mug') arms = 'walkMug'
+      // At the desk the Courier calls on the desk phone (the smartphone only away from it).
+      if (role === 'courier' && arms === 'phone' && here && a.dest === 'courier') {
+        arms = 'deskPhone'
+        onCall = true
+      }
       const ic = here ? life.icon(sim, v, role) : null
       if (ic) icons.push([px + 3, top - 1, ic])
     } else continue
