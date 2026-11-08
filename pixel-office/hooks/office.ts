@@ -9,8 +9,8 @@ export const EMPTY: Office = {
   secs: [], todos: null, compacting: false, lastActivity: 0, order: 0,
 }
 
-/** A worker with nothing left to do finishes a coffee, then walks out. */
-export const COFFEE_MS = 15_000
+/** A worker with nothing left to do stays at their station this long, then is free (a break). */
+export const LINGER_MS = 6_000
 /** A finished secretary cheers this long, then walks out. */
 export const CHEER_MS = 4_000
 /** A red ✗ stays this long. */
@@ -26,8 +26,10 @@ export const STALE_MS = 10 * 60_000
 /** The most secretaries kept on record. */
 const MAX_SECS = 60
 
-export const ROLES: readonly Role[] = ['archivist', 'typist', 'it', 'courier']
-export const ROLE_NAME: Record<Role, string> = { archivist: 'Archivist', typist: 'Typist', it: 'IT tech', courier: 'Courier' }
+export const ROLES: readonly Role[] = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian']
+export const ROLE_NAME: Record<Role, string> = {
+  archivist: 'Archivist', typist: 'Typist', it: 'IT tech', courier: 'Courier', researcher: 'Researcher', planner: 'Planner', librarian: 'Librarian',
+}
 
 /** How a list line or bubble reads: plain, dim, warning, failure, success. */
 export type Tone = '' | 'warn' | 'bad' | 'good' | 'idle'
@@ -47,6 +49,7 @@ export const ascii = (s: string, n: number): string => {
 /** The list's dot color for each person: the color of their clothes. */
 export const DOT = {
   manager: '#d7875f', archivist: '#af87d7', typist: '#d787af', it: '#00afaf', courier: '#ff8700', janitor: '#5f87d7', wait: '#8a8a8a',
+  researcher: '#d7af00', planner: '#87af5f', librarian: '#af875f',
   sec: ['#00afaf', '#af87d7', '#ffaf5f', '#5f87d7'],
 } as const
 export const secDot = (n: number): string => DOT.sec[((n % 4) + 4) % 4] ?? DOT.wait
@@ -115,11 +118,15 @@ export const todosFrom = (input: Record<string, unknown>): Todo[] | null => {
 
 /* ===== what it looks like now ===== */
 
-export type Worker = { role: Role; state: 'work' | 'coffee' | 'error'; short: string; full: string; jobs: string[] }
+export type Worker = { role: Role; state: 'work' | 'linger' | 'error'; short: string; full: string; jobs: string[]; since: number }
 export type ShownMood = Mood | 'plan'
 
 export type View = {
+  /** The moment this view is of. */
+  now: number
   mood: ShownMood
+  /** Plan mode is on (the meeting at the board lasts through its dialogs). */
+  planning: boolean
   /** The Manager's list line. */
   line: string
   tone: Tone
@@ -136,13 +143,22 @@ export type View = {
 
 const plural = (n: number, one: string, many: string) => n + ' ' + (n === 1 ? one : many)
 
-export function view(o: Office, now: number): View {
+/** The mood as it really is now (Calm decides what shows). */
+export function realMood(o: Office, now: number): ShownMood {
   const since = now - o.moodAt
   let mood: ShownMood = o.mood
   if (mood === 'done' && since > DONE_MS) mood = 'idle'
   if (mood === 'stopped' && since > STOP_MS) mood = 'idle'
   if (!o.turnActive && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'idle'
   if (o.plan && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'plan'
+  return mood
+}
+
+/** What the office looks like at `now`; `calm` turns the real mood into the shown one. */
+export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMood): View {
+  const since = now - o.moodAt
+  const real = realMood(o, now)
+  const mood = calm ? calm(real) : real
   const frozen = o.mood === 'stopped' && since <= STOP_MS
   // A new session has done nothing yet: its 10 minutes start when it does.
   const night = !o.turnActive && o.lastActivity > 0 && now - o.lastActivity > NIGHT_MS
@@ -153,11 +169,12 @@ export function view(o: Office, now: number): View {
     const last = o.last[role]
     const newest = jobs[jobs.length - 1]
     if (newest) {
-      workers[role] = { role, state: 'work', short: jobs.length > 1 ? ascii(newest.short, 10 - (' x' + jobs.length).length) + ' x' + jobs.length : newest.short, full: newest.full, jobs: jobs.map(j => j.full) }
+      const first = Math.min(...jobs.map(j => j.startedAt))
+      workers[role] = { role, state: 'work', short: jobs.length > 1 ? ascii(newest.short, 10 - (' x' + jobs.length).length) + ' x' + jobs.length : newest.short, full: newest.full, jobs: jobs.map(j => j.full), since: first }
     } else if (last && (last.err || last.denied) && now - last.endedAt < ERROR_MS) {
-      workers[role] = { role, state: 'error', short: last.denied ? 'No!' : 'Failed', full: (last.denied ? '✗ you said no: ' : '✗ failed: ') + last.full, jobs: [] }
-    } else if (last && (o.turnActive || frozen) && now - last.endedAt < COFFEE_MS) {
-      workers[role] = { role, state: 'coffee', short: '', full: 'done · coffee, then leaving', jobs: [] }
+      workers[role] = { role, state: 'error', short: last.denied ? 'No!' : 'Failed', full: (last.denied ? '✗ you said no: ' : '✗ failed: ') + last.full, jobs: [], since: last.endedAt }
+    } else if (last && now - last.endedAt < LINGER_MS) {
+      workers[role] = { role, state: 'linger', short: '', full: '✓ ' + last.full, jobs: [], since: last.endedAt }
     }
   }
 
@@ -168,7 +185,7 @@ export function view(o: Office, now: number): View {
   let tone: Tone = ''
   switch (mood) {
     case 'idle':
-      line = night ? 'Asleep · idle ' + Math.floor((now - o.lastActivity) / 60_000) + 'm' : 'Napping · wakes when you type'
+      line = night ? 'Asleep · idle ' + Math.floor((now - o.lastActivity) / 60_000) + 'm' : 'On a break · back when you type'
       tone = 'idle'
       break
     case 'think':
@@ -204,7 +221,7 @@ export function view(o: Office, now: number): View {
       tone = 'bad'
       break
   }
-  return { mood, line, tone, frozen, night, workers, janitor: o.compacting, secs, todos: o.todos, bg: o.bg }
+  return { now, mood, planning: o.plan, line, tone, frozen, night, workers, janitor: o.compacting, secs, todos: o.todos, bg: o.bg }
 }
 
 /* ===== the list under the office ===== */
@@ -217,19 +234,19 @@ const secWhat = (s: Sec): string =>
 
 /**
  * One line per person, busiest first: the Manager, the workers, the janitor, the
- * secretaries at desks, the line at the door, the to-do list. `seated` is the
- * secretaries at desks in desk order; without it the first four are.
+ * secretaries at desks, the line at the door, the to-do list, who is on a break.
+ * `seated` is the secretaries at desks in desk order; without it the first four are.
  */
-export function lines(v: View, seated?: readonly string[]): Line[] {
+export function lines(v: View, seated?: readonly (string | null)[], breakLine?: { who: string; what: string } | null): Line[] {
   const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone }]
-  const order: Record<Worker['state'], number> = { work: 0, error: 1, coffee: 2 }
+  const order: Record<Worker['state'], number> = { work: 0, error: 1, linger: 2 }
   const ws = ROLES.flatMap(r => (v.workers[r] ? [v.workers[r]!] : [])).sort((a, b) => order[a.state] - order[b.state])
   for (const w of ws) {
     if (w.state === 'work' && w.jobs.length > 1) {
       out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.jobs.length + ' at once', tone: '' })
       w.jobs.slice(0, 3).forEach(j => out.push({ dot: '', who: '', what: '└ ' + j, tone: '' }))
       if (w.jobs.length > 3) out.push({ dot: '', who: '', what: '└ +' + (w.jobs.length - 3) + ' more', tone: 'idle' })
-    } else out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'coffee' ? 'idle' : '' })
+    } else out.push({ dot: DOT[w.role], who: ROLE_NAME[w.role], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'linger' ? 'idle' : '' })
   }
   if (v.bg.length) out.push({ dot: v.workers.it ? '' : DOT.it, who: v.workers.it ? '' : 'IT tech', what: plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle' })
   if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '' })
@@ -243,6 +260,7 @@ export function lines(v: View, seated?: readonly string[]): Line[] {
     const now = v.todos.find(t => t.status === 'in_progress')
     out.push({ dot: '', who: 'To-do', what: done + '/' + v.todos.length + (now ? ' · ' + now.text : ''), tone: 'idle' })
   }
+  if (breakLine) out.push({ dot: '', who: breakLine.who, what: breakLine.what, tone: 'idle' })
   return out
 }
 

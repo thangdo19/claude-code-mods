@@ -5,8 +5,9 @@ import type { Mood, Office } from '../types'
 import { describe, oneLine, questionOf } from './labels'
 import { addSec, EMPTY, endJob, endStatus, endTurn, fitLines, lines, patchSec, setMood, startJob, startTurn, todosFrom, view, type Line, type Tone, type View } from './office'
 import { bigCells } from './big-cells'
-import { BIG_COLS, BIG_ROWS, bigWantOf, renderBig } from './big-scene'
+import { BIG_COLS, BIG_ROWS, renderBig } from './big-scene'
 import { BigSim } from './big-walk'
+import { Calm } from './calm'
 import { Camera, CAM_COLS, CAM_ROWS } from './camera'
 
 const PANE = 'office'
@@ -41,6 +42,8 @@ let cwd: string | undefined
 let mounted: { shape: Shape; inline: boolean; viewing?: string } | null = null
 const bigSim = new BigSim()
 const camera = new Camera()
+/** What the Manager shows: a fast think/tool loop does not flash bubbles. */
+const calm = new Calm()
 let lastCells = ''
 let lastList = ''
 let tick = 0
@@ -76,7 +79,6 @@ function shapeFor(surface: string, cols: number, rows: number): Shape | null {
 }
 
 const listKey = (ls: Line[]) => ls.map(l => l.who + '|' + l.what + '|' + l.tone).join('\n')
-const seatedIds = () => bigSim.seated().filter((x): x is string => x !== null)
 
 function draw(v: View, shape: Shape, viewing?: string) {
   const full = renderBig(v, bigSim, tick >> 1, tick, viewing)
@@ -90,18 +92,18 @@ async function onTick($: EngineInterface): Promise<void> {
   try {
     tick++
     const now = await $.clock.now()
-    const v = view(latest, now)
-    bigSim.sync(bigWantOf(v))
-    bigSim.step(v.frozen)
+    const v = view(latest, now, real => calm.step(real, now))
+    bigSim.sync(v)
+    bigSim.step(v)
     const cam = mounted.shape.kind === 'cam' ? mounted.shape : null
-    if (cam) camera.step(v, cam.cols, cam.rows * 2)
-    // The list changes with time as well (a coffee ends, "Done!" fades): redraw the pane then.
-    const key = listKey(lines(v, seatedIds()))
+    if (cam) camera.step(v, cam.cols, cam.rows * 2, bigSim)
+    // The list changes with time as well (a break changes, "Done!" fades): redraw the pane then.
+    const key = listKey(lines(v, bigSim.seated(), bigSim.breakLine(v)))
     if (key !== lastList) {
       lastList = key
       $.ui.invalidate('ui.render')
     }
-    const moving = bigSim.walking() || (cam !== null && camera.moving(v, cam.cols, cam.rows * 2))
+    const moving = bigSim.walking() || (cam !== null && camera.moving(v, cam.cols, cam.rows * 2, bigSim))
     // Above the prompt (classic renderer) the picture moves only while someone walks, at most
     // 4 frames a second, so the terminal has little to redraw; beside the transcript it is alive.
     // The frame where everyone stops (a bubble appears) is always drawn.
@@ -207,10 +209,11 @@ export const register: Register = on => {
         if (label.who !== 'manager') await change($, o => patchSec(o, agent, { short: label.short, full: label.full }))
       } else if (tool === 'AskUserQuestion') await change($, (o, now) => setMood(o, 'ask', now, questionOf(input)))
       else if (tool === 'EnterPlanMode') await change($, o => ({ ...o, plan: true }))
-      else if (tool === 'TodoWrite') await change($, o => ({ ...o, todos: todosFrom(input) }))
       else if (label.who !== 'manager') {
         const role = label.who
-        await change($, (o, now) => startJob(o, { id, role, short: label.short, full: label.full, startedAt: now }))
+        // The Planner writes the to-do list; the board shows it.
+        const todos = tool === 'TodoWrite' ? todosFrom(input) : undefined
+        await change($, (o, now) => startJob(todos === undefined ? o : { ...o, todos }, { id, role, short: label.short, full: label.full, startedAt: now }))
       }
     } catch {
       // The office misses this call; the tool runs anyway.
@@ -359,15 +362,16 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const o: Office = { ...EMPTY, ...(await read($, office)) }
     latest = o
-    const v = view(o, await $.clock.now())
+    const now = await $.clock.now()
+    const v = view(o, now, real => calm.peek(real, now))
     const cols = e.props.bodyColumns
     const rows = e.props.scroll.bodyRows
     const shape = shapeFor(e.surface, cols, rows)
     const viewing = e.props.view.agentId
-    if (shape) bigSim.sync(bigWantOf(v))
+    if (shape) bigSim.sync(v)
     // A new pane: the camera starts where it should be looking.
-    if (shape?.kind === 'cam') camera.step(v, shape.cols, shape.rows * 2)
-    const all = lines(v, shape ? seatedIds() : undefined)
+    if (shape?.kind === 'cam') camera.step(v, shape.cols, shape.rows * 2, bigSim)
+    const all = lines(v, shape ? bigSim.seated() : undefined, shape ? bigSim.breakLine(v) : null)
     lastList = listKey(all)
     const beside = shape?.kind === 'cam' && shape.beside
     const shown = fitLines(all, Math.max(1, beside ? rows : rows - (shape?.rows ?? 0)))
