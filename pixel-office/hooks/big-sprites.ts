@@ -107,6 +107,8 @@ export const P = {
   plant: '#3f9b56', plant2: '#2f7d44', pot: '#b8653a', chair: '#5a3a2c', chair2: '#6b4535', chairS: '#383c46', chairS2: '#474c58',
   gold: '#e8c25a', spot: '#ffd84a',
 } as const
+/** The Courier's red desk phone (approved round 4, "Red phone"); its handset is also in everyone's palette ('R'). */
+const PHONE = { body: '#b83232', hand: '#e86060', key: '#f4e1c1', cord: '#7a2222' } as const
 
 /* ===== people: 7 wide, 13 tall ===== */
 
@@ -114,8 +116,12 @@ const SPR = ['..hhh..', '.hHhhh.', '.hsssh.', '.seseS.', '..sms..', '.ckTkc.', '
 
 export type Look = {
   pal: Record<string, number>
-  /** 'open': long hair down the outside only (the face stays open) with a side part. */
-  style?: 'long' | 'bun' | 'cap' | 'open'
+  /** 'pony': a fuller crown, side-swept bangs and a high ponytail tied with a band (color `accent`) that swings. */
+  style?: 'long' | 'bun' | 'cap' | 'pony'
+  /** A skirt (the pants color) over legs of color `legs` (the skin by default). */
+  skirt?: boolean
+  /** Rosy cheeks. */
+  blush?: boolean
   glasses?: boolean
   /** Thin round glasses: a gold bridge. */
   wire?: boolean
@@ -126,19 +132,21 @@ export type Look = {
   bag?: boolean
   tie?: boolean
 }
-type LookDef = { skin: string; hair: string; shirt: string; inner?: string; tie?: string; pants?: string; cap?: string } & Omit<Look, 'pal' | 'tie'>
+type LookDef = { skin: string; hair: string; shirt: string; inner?: string; tie?: string; pants?: string; cap?: string; legs?: string; accent?: string } & Omit<Look, 'pal' | 'tie'>
 
 const look = (d: LookDef): Look => {
   const inner = d.inner ?? '#f4f4f4'
   const pants = d.pants ?? '#2f3443'
   return {
     style: d.style, glasses: d.glasses, wire: d.wire, silver: d.silver, headset: d.headset, badge: d.badge, bag: d.bag, tie: d.tie !== undefined,
+    skirt: d.skirt, blush: d.blush,
     pal: {
       h: C(d.hair), H: shade(d.hair, 1.45), s: C(d.skin), S: shade(d.skin, 0.86), e: C(OUT), m: mix(d.skin, '#a8434a', 0.45),
       c: C(d.shirt), C: shade(d.shirt, 0.78), k: C(inner), T: C(d.tie ?? inner), p: C(pants), P: shade(pants, 0.75), f: C('#1a1d24'),
       g: C('#2b2f38'), G: C('#bfe3ff'), w: C('#ffffff'), K: C('#6b4226'), B: C('#7a4a2a'), q: C(d.cap ?? d.hair), y: C('#e8c47a'), Y: C('#c9a256'),
       r: C('#e04b4b'), n: C('#d4ecff'), M: C('#9aa3ae'), W: C('#8a5a32'), Z: C('#d9b75e'), v: C('#e3e8ee'),
       L: C('#3fa37a'), D: C('#5bb8f0'), j: C('#d3dae3'), J: C('#8d97a5'),
+      l: C(d.legs ?? d.skin), b: mix(d.skin, '#ff6f91', 0.5), i: C(d.accent ?? '#ff7eb6'), R: C(PHONE.hand),
     },
   }
 }
@@ -147,9 +155,13 @@ export const LOOK = {
   manager: look({ skin: '#f1c7a2', hair: '#3a2a1e', shirt: '#2c3550', tie: '#d97757', pants: '#232a3d' }),
   archivist: look({ skin: '#d9a47e', hair: '#d3d3d8', style: 'bun', shirt: '#8a64bd', inner: '#efe6d6', pants: '#3d3550', glasses: true }),
   typist: look({ skin: '#f2cfb0', hair: '#b8452e', style: 'long', shirt: '#e07fa6', inner: '#fff0f5', pants: '#3b3f4f' }),
-  // The IT girl (approved Nov 2026, from the user's photo; hair "Open face"): long dark-brown hair down the sides, a
-  // side part, thin round glasses, silver headphones with a mic, the IT teal top.
-  it: look({ skin: '#f3d3bd', hair: '#4a2c1e', style: 'open', shirt: '#3a9a84', inner: '#2f7566', pants: '#2b2f3a', headset: true, silver: true, glasses: true, wire: true }),
+  // The IT girl (approved Nov 2026, round 4 "Ponytail": she read as a guy before): dark-brown hair with bangs and a high
+  // ponytail tied with a pink band, thin round glasses, rosy cheeks, the silver headset with its mic, the IT teal top,
+  // a navy skirt.
+  it: look({
+    skin: '#f3d3bd', hair: '#4a2c1e', style: 'pony', accent: '#ff6fae', shirt: '#3a9a84', inner: '#2f7566', pants: '#2b3a55',
+    skirt: true, blush: true, headset: true, silver: true, glasses: true, wire: true,
+  }),
   courier: look({ skin: '#e8b58e', hair: '#6b3e1e', style: 'cap', cap: '#e8a33d', shirt: '#d0603c', inner: '#f2e2c4', pants: '#3b4a6b', bag: true }),
   janitor: look({ skin: '#c98f6a', hair: '#4a3a2a', style: 'cap', cap: '#2f5f9e', shirt: '#3c6fb4', inner: '#e8eef7', pants: '#335f9c' }),
   researcher: look({ skin: '#f0c8a0', hair: '#2b2b2b', shirt: '#e6b432', inner: '#fff6dc', pants: '#3b3f4f', glasses: true }),
@@ -171,7 +183,7 @@ export const LOOK = {
 }
 export const secLook = (n: number): Look => LOOK.sec[((n % LOOK.sec.length) + LOOK.sec.length) % LOOK.sec.length] ?? LOOK.manager
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom'
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'deskPhone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom'
 /** `busy`: on a job — typing hands hop out and in (see workFx for the paper bits). */
 export type PersonOpts = { f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number; busy?: boolean }
 
@@ -198,12 +210,11 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
     put(3, 6, 'c')
     put(3, 7, 'c')
   }
-  if (L.style === 'open') {
-    for (let r = 2; r <= 5; r++) {
-      put(0, r, 'h')
-      put(6, r, 'h')
-    }
-    put(2, 2, 'h')
+  if (L.style === 'pony') {
+    // A fuller crown, side-swept bangs, the hair down to the ears (the ponytail comes after the headset).
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let i = 0; i <= 6; i++) put(i, 1, i === 2 ? 'H' : 'h')
+    for (const [a, b] of [[2, 2], [3, 2], [0, 2], [6, 2]] as const) put(a, b, 'h')
   } else if (L.style === 'long') for (const [a, b] of [[1, 3], [5, 3], [1, 4], [5, 4], [0, 4], [6, 4], [0, 5], [6, 5]] as const) put(a, b, 'h')
   else if (L.style === 'bun') {
     put(2, -1, 'h')
@@ -219,6 +230,10 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
     put(4, 3, 'G')
     put(3, 3, L.wire ? 'Y' : 'g')
   }
+  if (L.blush) {
+    put(1, 4, 'b')
+    put(5, 4, 'b')
+  }
   if (L.headset && L.silver) {
     // Silver headphones: a band curving over the head down to the ear cups, a mic by the mouth.
     for (const [a, b] of [[2, -1], [3, -1], [4, -1], [1, 0], [5, 0], [0, 1], [6, 1]] as const) put(a, b, 'j')
@@ -226,6 +241,11 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
   } else if (L.headset) {
     for (let i = 1; i <= 5; i++) put(i, -1, 'g')
     for (const [a, b] of [[0, 2], [0, 3], [6, 2], [6, 3]] as const) put(a, b, 'g')
+  }
+  if (L.style === 'pony') {
+    // The ponytail behind the head, tied high with the band; it swings as she walks.
+    const sw = f % 2
+    for (const [a, b, ch] of [[6, 0, 'i'], [7, 0, 'h'], [7, 1, 'h'], [7 + sw, 2, 'H'], [7 + sw, 3, 'h'], [7 + sw, 4, 'h']] as const) put(a, b, ch)
   }
   if (L.badge) put(5, 6, 'w')
   if (L.bag) for (const [a, b] of [[1, 5], [2, 6], [3, 7]] as const) put(a, b, 'B')
@@ -283,6 +303,14 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       put(6, 4, 's')
       put(6, 2, 'g')
       put(6, 3, 'g')
+      break
+    case 'deskPhone':
+      // The desk phone's handset at the ear, the hand under it (deskPhone draws the cord down to the phone).
+      del(6, 8)
+      del(6, 7)
+      put(6, 5, 'C')
+      put(6, 4, 's')
+      for (const [a, b] of [[6, 2], [6, 3], [7, 2], [5, 4]] as const) put(a, b, 'R')
       break
     case 'mug':
       del(6, 8)
@@ -420,11 +448,22 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       }
       break
   }
+  if (L.skirt && !o.seat) skirt(f, o.arms === 'walk' || o.arms === 'walkMug' || o.arms === 'walkBroom', put, del)
   for (const [k, ch] of g) {
     const [px = 0, py = 0] = k.split(',').map(Number)
     const col = L.pal[ch]
     if (col !== undefined) fb.s(x + px, y + py, col)
   }
+}
+
+/** A skirt flaring out over the legs (rows 9–12); walking, the legs step apart under it. */
+function skirt(f: number, walking: boolean, put: (x: number, y: number, ch: string) => void, del: (x: number, y: number) => void): void {
+  for (let yy = 9; yy <= 12; yy++) for (let xx = 0; xx <= 6; xx++) del(xx, yy)
+  for (let xx = 1; xx <= 5; xx++) put(xx, 9, xx >= 4 ? 'P' : 'p')
+  for (let xx = 0; xx <= 6; xx++) put(xx, 10, xx % 2 ? 'P' : 'p')
+  const apart = walking && f % 2
+  for (const xx of apart ? [1, 5] : [2, 4]) put(xx, 11, 'l')
+  for (const xx of apart ? [0, 1, 5, 6] : [1, 2, 4, 5]) put(xx, 12, 'f')
 }
 
 /** On a job: two bits of paper fly up from the hands of the person drawn at (x, y). `f`: every tick. */
@@ -436,6 +475,24 @@ export function workFx(fb: FB, x: number, y: number, f: number): void {
 }
 
 /* ===== furniture ===== */
+
+/**
+ * The desk phone, 4 × 3 on the desk top: the handset across the top, cream keys, the base. In use, the handset is at
+ * the Courier's ear (drawPerson 'deskPhone') and its coiled cord runs down to the phone. (Low, so a mug in hand shows.)
+ */
+export function deskPhone(fb: FB, x: number, y: number, inUse: boolean): void {
+  fb.r(x, y + 1, 4, 1, PHONE.body)
+  fb.s(x + 1, y + 1, PHONE.key)
+  fb.s(x + 2, y + 1, PHONE.key)
+  fb.r(x, y + 2, 4, 1, shade(PHONE.body, 0.75))
+  if (inUse) {
+    fb.s(x, y, PHONE.body)
+    fb.s(x + 3, y, PHONE.body)
+    fb.s(x - 1, y - 1, PHONE.cord)
+    fb.s(x - 1, y, PHONE.hand)
+    fb.s(x - 1, y + 1, PHONE.cord)
+  } else fb.r(x, y, 4, 1, PHONE.hand)
+}
 
 export function room(fb: FB): void {
   fb.r(0, 0, fb.w, 19, P.wall)
@@ -663,6 +720,31 @@ export function boardWords(sc: Scene, x: number, y: number, w: number, h: number
 
 /* ===== bubbles ===== */
 
+/*
+ * Every bubble (approved round 4, "No outline, soft shadow"): plain white with its corners cut, and a soft shadow
+ * under it and to its right: what is under it, a quarter darker. (A black outline looked ugly.)
+ */
+const dim = (fb: FB, x: number, y: number) => {
+  if (x < 0 || y < 0 || x >= fb.w || y >= fb.h) return
+  const p = fb.p[y * fb.w + x]!
+  fb.s(x, y, shade(p < 0 ? P.wall : p, 0.74))
+}
+/** A white box `w` × `h` with its corners cut, its shadow under and right of it. */
+function roundBox(fb: FB, x: number, y: number, w: number, h: number): void {
+  for (let i = x + 1; i <= x + w - 1; i++) dim(fb, i, y + h)
+  for (let j = y + 1; j <= y + h - 1; j++) dim(fb, x + w, j)
+  fb.r(x + 1, y, w - 2, h, '#ffffff')
+  fb.r(x, y + 1, w, h - 2, '#ffffff')
+}
+/** One white dot of a bubble's tail, with its shadow. */
+function tailDot(fb: FB, x: number, y: number): void {
+  dim(fb, x + 1, y)
+  dim(fb, x, y + 1)
+  fb.s(x, y, '#ffffff')
+}
+/** The "…" in a thought bubble: soft gray (black read like a face). */
+const DOTS = '#7d8aa0'
+
 /**
  * The thought bubble, grown in `stage` steps so a short think never flashes it:
  * 1 a dot by the head, 2 a second dot, 3 the bubble.
@@ -673,24 +755,19 @@ export function thinkBubble(fb: FB, x: number, y: number, f: number, stage = 3):
   x = Math.max(0, Math.min(x, fb.w - W))
   if (stage <= 0) return
   if (stage < 3) {
-    fb.s(x, y + H + 2, OUT)
+    tailDot(fb, x, y + H + 2)
     if (stage === 2) {
-      fb.r(x + 1, y + H, 2, 1, OUT)
-      fb.r(x + 3, y + H - 2, 3, 2, OUT)
-      fb.r(x + 4, y + H - 3, 1, 1, OUT)
-      fb.s(x + 4, y + H - 2, '#ffffff')
+      tailDot(fb, x + 1, y + H)
+      tailDot(fb, x + 2, y + H)
+      roundBox(fb, x + 3, y + H - 3, 3, 3)
     }
     return
   }
-  fb.r(x + 1, y, W - 2, 1, OUT)
-  fb.r(x + 1, y + H - 1, W - 2, 1, OUT)
-  fb.r(x, y + 1, 1, H - 2, OUT)
-  fb.r(x + W - 1, y + 1, 1, H - 2, OUT)
-  fb.r(x + 1, y + 1, W - 2, H - 2, '#ffffff')
-  fb.s(x + 1, y + H + 1, OUT)
-  fb.s(x, y + H + 2, OUT)
+  roundBox(fb, x, y, W, H)
+  tailDot(fb, x + 1, y + H + 1)
+  tailDot(fb, x, y + H + 2)
   const n = f % 4
-  for (let i = 0; i < 3; i++) fb.s(x + 2 + i * 2, y + 3, i < n ? OUT : '#d5d9e0')
+  for (let i = 0; i < 3; i++) fb.s(x + 2 + i * 2, y + 3, i < n ? DOTS : '#d5d9e0')
 }
 
 /** A small bubble with a picture, not words: chatting, the meeting. Its tail points down at (cx, bottom). */
@@ -699,12 +776,8 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
   const H = 6
   const x = Math.max(0, Math.min(cx - 3, fb.w - W))
   const y = bottom - H - 1
-  fb.r(x + 1, y, W - 2, 1, OUT)
-  fb.r(x + 1, y + H - 1, W - 2, 1, OUT)
-  fb.r(x, y + 1, 1, H - 2, OUT)
-  fb.r(x + W - 1, y + 1, 1, H - 2, OUT)
-  fb.r(x + 1, y + 1, W - 2, H - 2, '#ffffff')
-  fb.s(Math.max(x + 1, Math.min(cx, x + W - 2)), y + H, OUT)
+  roundBox(fb, x, y, W, H)
+  tailDot(fb, Math.max(x + 1, Math.min(cx, x + W - 2)), y + H)
   // (Soft gray "…": black dots in a white box read like a little face.)
   const ink: Record<string, string> = { dots: '#7d8aa0', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6', check: '#2f9e57' }
   const art: Record<string, string[]> = {
@@ -772,14 +845,10 @@ export function textBubble(sc: Scene, cx: number, row: number, words: string, to
   const w = str.length
   const y = row * 2
   const x = Math.min(fb.w - w - 2, Math.max(2, minX, cx - Math.floor(w / 2)))
-  fb.r(x - 1, y - 1, w + 2, 4, '#ffffff')
-  fb.r(x - 1, y - 2, w + 2, 1, OUT)
-  fb.r(x - 1, y + 3, w + 2, 1, OUT)
-  fb.r(x - 2, y - 1, 1, 4, OUT)
-  fb.r(x + w + 1, y - 1, 1, 4, OUT)
   const tx = Math.max(x, Math.min(cx, x + w - 1))
-  sc.cover(x - 2, y - 2, x + w + 1, y + 5)
-  fb.s(tx, y + 4, OUT)
-  fb.s(tx, y + 5, OUT)
+  sc.cover(x - 2, y - 2, x + w + 2, y + 6)
+  roundBox(fb, x - 2, y - 2, w + 4, 6)
+  tailDot(fb, tx, y + 4)
+  tailDot(fb, tx, y + 5)
   sc.text(x, row, str, BUBBLE_INK[tone], '#ffffff')
 }

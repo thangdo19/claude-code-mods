@@ -101,7 +101,7 @@ async function onTick($: EngineInterface): Promise<void> {
     const cam = mounted.shape.kind === 'cam' ? mounted.shape : null
     if (cam) camera.step(v, cam.cols, cam.rows * 2, bigSim)
     // The list changes with time as well (a break changes, "Done!" fades): redraw the pane then.
-    const key = listKey(lines(v, bigSim.seated(), bigSim.breakLine(v), id => bigSim.lookOf(id)))
+    const key = listKey(lines(v, bigSim.seated(), r => bigSim.doing(v, r), id => bigSim.lookOf(id)))
     if (key !== lastList) {
       lastList = key
       $.ui.invalidate('ui.render')
@@ -386,7 +386,8 @@ export const register: Register = on => {
     if (shape) bigSim.sync(v)
     // A new pane: the camera starts where it should be looking.
     if (shape?.kind === 'cam') camera.step(v, shape.cols, shape.rows * 2, bigSim)
-    const all = lines(v, shape ? bigSim.seated() : undefined, shape ? bigSim.breakLine(v) : null, shape ? id => bigSim.lookOf(id) : undefined)
+    // Everyone has their own line (approved round 4); with no picture, the staff with no job say where they are.
+    const all = lines(v, shape ? bigSim.seated() : undefined, shape ? r => bigSim.doing(v, r) : undefined, shape ? id => bigSim.lookOf(id) : undefined)
     lastList = listKey(all)
     const beside = shape?.kind === 'cam' && shape.beside
     // The list's own width (beside the camera: what the camera and the gap leave); long lines wrap within it.

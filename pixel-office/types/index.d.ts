@@ -26,6 +26,9 @@ export type LastJob = {
   endedAt: number
 }
 
+/** A finished call, kept for the turn so the picture can show it at a human pace. */
+export type Done = { role: Role; short: string; full: string; startedAt: number; endedAt: number }
+
 /** Where a subagent stands: working, finished, failed or stopped, or a teammate waiting for a message. */
 export type SecStatus = 'run' | 'done' | 'fail' | 'idle'
 
@@ -68,6 +71,8 @@ export type Office = {
   jobs: Job[]
   /** Each worker's last finished call. */
   last: Partial<Record<Role, LastJob>>
+  /** This turn's finished calls (the last 30), for the human pace. An older stored state has none. */
+  recent?: Done[]
   /** Commands still running in the background (as the last Stop listed them). */
   bg: string[]
   secs: Sec[]

@@ -1,16 +1,16 @@
 // Office life: what the staff and the Manager do with nothing to do (between turns
-// a break: coffee, a chat, a game, the plant; while Claude works their own things at
-// their desk), reporting a finished job to the Manager, the planning meeting, and
-// where the Manager goes while Claude works. Decides only; BigSim walks. Seeded random, so a test sees
-// the same office every run.
+// a break: coffee, a chat, a game, the plant; while Claude works quiet work of their
+// own at their station, or a huddle with the thinking Manager), reporting a finished job to the Manager, the
+// planning meeting, and where the Manager goes while Claude works. Decides only; BigSim walks. Seeded random, so a
+// test sees the same office every run.
 
 import type { Role } from '../types'
 import type { BigSim } from './big-walk'
-import { LINGER_MS, ROLE_NAME, ROLES, type View } from './office'
+import { LINGER_MS, MIN_SHOW, ROLE_NAME, ROLES, type View } from './office'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
 export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'
-export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'read' | 'tidy' | 'stretch' | 'report' | 'tick'
+export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'stretch' | 'report' | 'tick' | 'own' | 'huddle'
 /** Someone with a life: a role, or 'manager'. */
 type Who = Role | 'manager'
 type Act = { kind: ActKind; spot: string; until: number; partner?: Who }
@@ -24,10 +24,30 @@ const FRONT: Partial<Record<Role, number>> = { researcher: 0, planner: 1, librar
 const VISIT: Partial<Record<Who, string>> = { courier: 'visitCourier', typist: 'visitTypist' }
 /** Two places to chat: by the water cooler, and by the board. */
 const CHATS: [string, string][] = [['chatA', 'chatB'], ['chatC', 'chatD']]
-const AT_HOME = new Set<ActKind>(['sip', 'phone', 'mug', 'game', 'read', 'tidy', 'stretch'])
-/** Their own things at the desk while Claude works (no breaks then): kind, weight, shortest and longest ticks. */
-const DESK_ACTS: readonly [ActKind, number, number, number][] = [['read', 2, 96, 180], ['tidy', 2, 64, 120], ['sip', 2, 64, 120], ['phone', 2, 48, 96], ['stretch', 1, 24, 40]]
+const AT_HOME = new Set<ActKind>(['sip', 'phone', 'mug', 'game', 'stretch'])
+/**
+ * While Claude works, with no job (approved round 4, "Own work at the desk"): mostly quiet work of their own at their
+ * station (monitor on, calm hands, no words), now and then a sip or a stretch. Kind, weight, shortest and longest ticks.
+ */
+const DESK_ACTS: readonly [ActKind, number, number, number][] = [['own', 6, 120, 240], ['sip', 1, 48, 96], ['stretch', 1, 24, 40]]
 const AT_DESK = new Set<ActKind>(DESK_ACTS.map(([k]) => k))
+/** Each one's own work, for the list. */
+export const OWN_WORK: Record<Role, string> = {
+  archivist: 'sorting files', it: 'checking the servers', courier: 'sorting the mail', typist: 'proofreading', researcher: 'reading up',
+  planner: 'planning ahead', librarian: 'tidying the shelves',
+}
+/** Huddle (approved round 4): the Manager thinking this many ticks (2 s) at the desk calls one or two over. */
+const HUDDLE_AFTER = 16
+/** At most this many at a huddle (the two report spots). */
+const HUDDLE_MOST = 2
+/** Who comes first when nobody worked yet this session. */
+const HUDDLE_ORDER: readonly Role[] = ['planner', 'archivist', 'it', 'typist', 'researcher', 'courier', 'librarian']
+/** What each one is doing, for their line in the list. */
+const DOING: Record<ActKind, string> = {
+  sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
+  plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting', stretch: 'stretching',
+  report: 'reporting to the Manager', tick: 'ticking the board', own: 'at work', huddle: 'talking it over with the Manager',
+}
 /** Where a finished job is reported: either end of the Manager's desk. */
 const REPORT_SPOTS = ['rep0', 'rep1']
 /** Spots too close together for two people at once (a report spot and the visit / look-over spot below it). */
@@ -53,8 +73,10 @@ const HOLD_MAX = 16
 const TICK_EVERY = 6
 const TICK_SHOW = 14
 
-/** A job or agent running this long (ms) brings the Manager over. */
+/** An agent running this long (ms) brings the Manager over. */
 export const SLOW_MS = 1500
+/** A job shown this long brings the Manager over (every job shows MIN_SHOW at least: a second more is a slow one). */
+export const JOB_SLOW_MS = MIN_SHOW + 1000
 /** Ticks the Manager stays where they arrived (3 s). */
 const STAY = 24
 /** Ticks at each front desk on a round of the desks. */
@@ -110,6 +132,9 @@ export class Life {
   private tickAt = -1
   /** Until this tick the Manager shows a check at the board. */
   tickShow = -1
+  /** The huddle: since when the Manager thinks (tick), and when each worker last had a job. */
+  private thinkSince = -1
+  private readonly worked = new Map<Role, number>()
 
   /** Who is in the office: staff come for the workday, go home at night; the Manager is always in. */
   sync(sim: BigSim, v: View, instant: boolean): void {
@@ -180,6 +205,7 @@ export class Life {
     }
     const boss = sim.actors.get('manager')
     if (managerFree(v) && boss && !boss.leaving) free.push('manager')
+    this.huddle(sim, v, free)
     for (const r of free) {
       const act = this.acts.get(r)
       // Just in, or on the way to their own place: there first. (In work time, never on to a break spot.)
@@ -205,6 +231,52 @@ export class Life {
       this.thinkClock = 0
       this.think = want > this.think ? this.think + 1 : this.think === 3 ? 1 : 0
     }
+  }
+
+  /**
+   * The huddle (approved round 4): the Manager thinking 2 s at the desk calls over the one or two who worked last (the
+   * Planner and the Archivist when nobody did) to the report spots. They talk it over until the thinking ends; a job
+   * calls them back, and a report always gets a spot (see reporting).
+   */
+  private huddle(sim: BigSim, v: View, free: Who[]): void {
+    for (const r of ROLES) if (v.workers[r]?.state === 'work') this.worked.set(r, sim.tick)
+    if (v.mood !== 'think') {
+      this.thinkSince = -1
+      return
+    }
+    if (this.thinkSince < 0) this.thinkSince = sim.tick
+    if (sim.tick - this.thinkSince < HUDDLE_AFTER || !sim.here('manager', 'chair')) return
+    const on = ROLES.filter(r => this.acts.get(r)?.kind === 'huddle').length
+    const pick = free
+      .filter((r): r is Role => r !== 'manager' && sim.here(r) && !['huddle', 'report'].includes(this.acts.get(r)?.kind ?? ''))
+      .sort((a, b) => (this.worked.get(b) ?? -1) - (this.worked.get(a) ?? -1) || HUDDLE_ORDER.indexOf(a) - HUDDLE_ORDER.indexOf(b))
+    for (const r of pick.slice(0, Math.max(0, HUDDLE_MOST - on))) {
+      const spot = REPORT_SPOTS.find(s => !crowded(sim, s, r))
+      if (!spot) return
+      this.endAct(r)
+      // (Long: it ends when the thinking does.)
+      this.start(sim, r, 'huddle', spot, 2000)
+    }
+  }
+
+  /** What `r` (no job now) is doing, for their own line in the list. */
+  doing(sim: BigSim, v: View, r: Role): string {
+    const a = sim.actors.get(r)
+    if (!a) return cleaning(v) ? 'stepped out while the Janitor cleans' : v.night ? 'gone home' : 'on the way in'
+    if (a.leaving) return cleaning(v) ? 'stepping out' : 'going home'
+    if (meeting(v)) return 'at the board'
+    const lent = sim.borrowed(r) ? ' · an agent has the desk' : ''
+    const act = this.acts.get(r)
+    if (!act) return (sim.here(r) ? 'at the desk' : 'back to the desk') + lent
+    const mate = act.partner ? 'the ' + NAME(act.partner) : ''
+    const what =
+      act.kind === 'chat' ? 'chatting with ' + mate
+      : act.kind === 'visit' ? 'visiting ' + mate
+      : act.kind === 'host' ? mate + ' came by'
+      : act.kind === 'own' ? OWN_WORK[r]
+      : act.kind === 'report' && !REPORT_SPOTS.includes(act.spot) ? 'calling the Manager'
+      : DOING[act.kind]
+    return what + lent
   }
 
   /** People on the way to a break thing now (not counting the walk back to a job). */
@@ -257,6 +329,13 @@ export class Life {
     if (!isWho(id)) return null
     const mine = this.acts.get(id)
     if (mine?.kind === 'report') return sim.here(id, mine.spot) ? 'check' : null
+    if (mine?.kind === 'huddle') {
+      // Talking it over: one at a time shows ? ! …
+      if (!sim.here(id, mine.spot)) return null
+      const there = ROLES.filter(r => this.acts.get(r)?.kind === 'huddle' && sim.here(r, this.acts.get(r)!.spot))
+      const phase = Math.floor(t / 16)
+      return there[phase % there.length] === id ? (MEET_ICONS[phase % 3] ?? null) : null
+    }
     if (id !== 'manager' && meeting(v) && !v.workers[id]) {
       const there = ROLES.filter(r => !v.workers[r] && sim.here(r, MEET[r]))
       const phase = Math.floor(t / 16)
@@ -275,51 +354,13 @@ export class Life {
     return this.acts.get(w)?.kind ?? null
   }
 
-  /** Who is on a break (or in the meeting), for the list. */
-  breakLine(sim: BigSim, v: View): { who: string; what: string } | null {
-    if (cleaning(v)) return { who: 'Out', what: 'Staff stepped out until the Janitor is done' }
-    const inside: Who[] = ROLES.filter(r => sim.actors.has(r) && !sim.actors.get(r)!.leaving && !v.workers[r])
-    if (managerFree(v) && sim.actors.has('manager')) inside.unshift('manager')
-    if (!inside.length) return null
-    if (meeting(v)) {
-      // Everyone (approved "Both": a short word when it's everyone, the names otherwise).
-      const all = inside.length === ROLES.filter(r => sim.actors.has(r) && !sim.actors.get(r)!.leaving).length
-      return { who: 'Meeting', what: all ? 'Everyone at the board' : inside.map(NAME).join(', ') + ' at the board' }
-    }
-    const what: Record<ActKind, string> = {
-      sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
-      plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting',
-      read: 'reading', tidy: 'tidying up', stretch: 'stretching', report: 'reporting to the Manager', tick: 'ticking the board',
-    }
-    if (workTime(v)) {
-      const parts = inside.map(r => {
-        const act = this.acts.get(r)
-        return NAME(r) + ' ' + (act ? what[act.kind] : 'back to the desk')
-      })
-      return { who: 'Desks', what: parts.join(' · ') }
-    }
-    const done = new Set<Who>()
-    const parts: string[] = []
-    for (const r of inside) {
-      if (done.has(r)) continue
-      done.add(r)
-      const act = this.acts.get(r)
-      const mate = act?.partner
-      if (act && mate && inside.includes(mate)) {
-        done.add(mate)
-        const host = act.kind === 'host' ? r : act.kind === 'visit' ? mate : null
-        parts.push(host ? NAME(host === r ? mate : r) + ' visits ' + NAME(host) : NAME(r) + ' & ' + NAME(mate) + ' chatting')
-        continue
-      }
-      parts.push(NAME(r) + ' ' + (act ? what[act.kind] : 'just in'))
-    }
-    return { who: 'Break', what: parts.join(' · ') }
-  }
-
   /* ===== a break ===== */
 
   private valid(sim: BigSim, r: Who, act: Act, free: Who[], v: View): boolean {
     if (act.spot === HOME[r] && r !== 'manager' && sim.borrowed(r)) return false
+    // A huddle lasts while the Manager thinks at the desk; own work while Claude works.
+    if (act.kind === 'huddle') return v.mood === 'think' && sim.here('manager', 'chair')
+    if (act.kind === 'own' && !workTime(v)) return false
     // Claude is working: the break is over.
     if (workTime(v) && !AT_DESK.has(act.kind)) return false
     if (!act.partner) return true
@@ -361,7 +402,14 @@ export class Life {
     if (v.now - finished < REPORT_AFTER) return true
     this.reported.set(r, finished)
     this.endAct(r)
-    const spot = sim.here('manager', 'chair') ? REPORT_SPOTS.find(s => !crowded(sim, s, r)) : undefined
+    let spot = sim.here('manager', 'chair') ? REPORT_SPOTS.find(s => !crowded(sim, s, r)) : undefined
+    // Both spots taken by a huddle: one huddler goes back to the desk to make room.
+    const h = spot || !sim.here('manager', 'chair') ? undefined : ROLES.find(x => x !== r && this.acts.get(x)?.kind === 'huddle')
+    if (h) {
+      this.endAct(h)
+      sim.goTo(h, sim.borrowed(h) ? spare(sim, h) : HOME[h], { hurry: true })
+      spot = REPORT_SPOTS.find(s => !crowded(sim, s, r))
+    }
     const dest = sim.actors.get(r)!.dest
     const here = sim.borrowed(r) && dest === HOME[r] ? spare(sim, r) : dest
     this.start(sim, r, 'report', spot ?? here, REPORT_TICKS, undefined, spot !== undefined)
@@ -379,9 +427,9 @@ export class Life {
     const homeOk = r === 'manager' || !sim.borrowed(r)
     const home = HOME[r]
     if (workTime(v) && r !== 'manager') {
-      // Their own things at their own desk (a spare spot, with a paper or the phone, if an agent borrowed it).
+      // Quiet work of their own at their station (at a spare spot, with notes in hand, if an agent borrowed it).
       const spot = homeOk ? home : spare(sim, r)
-      const kinds = DESK_ACTS.filter(([k]) => k !== prev?.kind && (homeOk || k === 'read' || k === 'phone'))
+      const kinds = DESK_ACTS.filter(([k]) => (k !== prev?.kind || k === 'own') && (homeOk || k !== 'stretch'))
       let pick = this.rand() * kinds.reduce((n, [, w]) => n + w, 0)
       const [kind, , lo, hi] = kinds.find(([, w]) => (pick -= w) <= 0) ?? kinds[kinds.length - 1]!
       this.start(sim, r, kind, spot, this.between(lo, hi), undefined, sim.actors.get(r)?.dest !== spot)
@@ -477,7 +525,7 @@ export class Life {
       const i = FRONT[r]
       const w = v.workers[r]
       // (Not a briefing or the reply: those never need a look.)
-      if (i !== undefined && w?.state === 'work' && !w.note && v.now - w.since >= SLOW_MS && sim.here(r, HOME[r]) && !slowDesks.includes(i)) slowDesks.push(i)
+      if (i !== undefined && w?.state === 'work' && !w.note && v.now - w.since >= JOB_SLOW_MS && sim.here(r, HOME[r]) && !slowDesks.includes(i)) slowDesks.push(i)
     }
     slowDesks.sort((a, b) => a - b)
     if (slowDesks.length) {
@@ -493,7 +541,7 @@ export class Life {
       if (sim.tick < this.restUntil) return 'chair'
       return 'patrol' + slowDesks[0]
     }
-    const slow = ROLES.filter(r => SUP[r] && v.workers[r]?.state === 'work' && !v.workers[r]!.note && v.now - v.workers[r]!.since >= SLOW_MS)
+    const slow = ROLES.filter(r => SUP[r] && v.workers[r]?.state === 'work' && !v.workers[r]!.note && v.now - v.workers[r]!.since >= JOB_SLOW_MS)
     if (slow.some(r => SUP[r] === m.dest)) return m.dest
     const first = [...slow].sort((a, b) => v.workers[a]!.since - v.workers[b]!.since)[0]
     return first ? SUP[first]! : 'chair'
