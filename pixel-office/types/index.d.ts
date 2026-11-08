@@ -52,8 +52,8 @@ export type Sec = {
 /** What the Manager (Claude's main loop) is doing. */
 export type Mood = 'idle' | 'think' | 'write' | 'work' | 'permission' | 'ask' | 'done' | 'stopped' | 'hold'
 
-/** One line of the to-do list, as TodoWrite gave it. */
-export type Todo = { text: string; status: 'pending' | 'in_progress' | 'completed' }
+/** One line of the to-do list, as TodoWrite gave it, or a task (TaskCreate / TaskUpdate / TaskList) with its id. */
+export type Todo = { text: string; status: 'pending' | 'in_progress' | 'completed'; id?: string }
 
 export type Office = {
   mood: Mood

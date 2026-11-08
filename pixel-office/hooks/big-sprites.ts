@@ -1,6 +1,7 @@
 // The big office's art (the design approved in the plan artifact): square pixels,
 // two per terminal cell, people 7 × 13 pixels, furniture, bubbles. Pure drawing.
 
+import { plain } from './labels'
 import type { Tone } from './office'
 
 /** A color as #rrggbb or 0xRRGGBB. */
@@ -60,14 +61,36 @@ export class Scene {
   constructor(w: number, h: number) {
     this.fb = new FB(w, h)
   }
-  /** Printable ASCII only, so no character can be wider than its cell in any terminal. */
+  /**
+   * Printable ASCII only (accents dropped), so no character can be wider than its cell in any terminal. The cell's
+   * two pixels take the background color, so anything drawn over them later hides the letter (see settle).
+   */
   text(x: number, row: number, str: string, fg: Paint, bg: Paint): void {
     let i = 0
-    for (const raw of str) {
+    for (const raw of plain(str)) {
       const code = raw.charCodeAt(0)
       const ch = raw.length === 1 && code >= 0x20 && code <= 0x7e ? raw : '?'
-      if (x + i >= 0 && x + i < this.fb.w) this.texts.push({ x: x + i, row, ch, fg: C(fg), bg: C(bg) })
+      if (x + i >= 0 && x + i < this.fb.w) {
+        this.texts.push({ x: x + i, row, ch, fg: C(fg), bg: C(bg) })
+        this.fb.s(x + i, row * 2, bg)
+        this.fb.s(x + i, row * 2 + 1, bg)
+      }
       i++
+    }
+  }
+  /** A bubble is about to be drawn over pixels x0..x1, y0..y1: the letters under it go (none show through). */
+  cover(x0: number, y0: number, x1: number, y1: number): void {
+    for (let i = this.texts.length - 1; i >= 0; i--) {
+      const t = this.texts[i]!
+      if (t.x >= x0 && t.x <= x1 && t.row * 2 + 1 >= y0 && t.row * 2 <= y1) this.texts.splice(i, 1)
+    }
+  }
+  /** After drawing: a letter something was drawn over (a person in front of a sign or the board) goes. */
+  settle(): void {
+    const { p, w } = this.fb
+    for (let i = this.texts.length - 1; i >= 0; i--) {
+      const t = this.texts[i]!
+      if (p[t.row * 2 * w + t.x] !== t.bg || p[(t.row * 2 + 1) * w + t.x] !== t.bg) this.texts.splice(i, 1)
     }
   }
 }
@@ -91,9 +114,14 @@ const SPR = ['..hhh..', '.hHhhh.', '.hsssh.', '.seseS.', '..sms..', '.ckTkc.', '
 
 export type Look = {
   pal: Record<string, number>
-  style?: 'long' | 'bun' | 'cap'
+  /** 'open': long hair down the outside only (the face stays open) with a side part. */
+  style?: 'long' | 'bun' | 'cap' | 'open'
   glasses?: boolean
+  /** Thin round glasses: a gold bridge. */
+  wire?: boolean
   headset?: boolean
+  /** The headset as silver headphones over the head, with a mic by the mouth (reads apart from dark hair). */
+  silver?: boolean
   badge?: boolean
   bag?: boolean
   tie?: boolean
@@ -104,13 +132,13 @@ const look = (d: LookDef): Look => {
   const inner = d.inner ?? '#f4f4f4'
   const pants = d.pants ?? '#2f3443'
   return {
-    style: d.style, glasses: d.glasses, headset: d.headset, badge: d.badge, bag: d.bag, tie: d.tie !== undefined,
+    style: d.style, glasses: d.glasses, wire: d.wire, silver: d.silver, headset: d.headset, badge: d.badge, bag: d.bag, tie: d.tie !== undefined,
     pal: {
       h: C(d.hair), H: shade(d.hair, 1.45), s: C(d.skin), S: shade(d.skin, 0.86), e: C(OUT), m: mix(d.skin, '#a8434a', 0.45),
       c: C(d.shirt), C: shade(d.shirt, 0.78), k: C(inner), T: C(d.tie ?? inner), p: C(pants), P: shade(pants, 0.75), f: C('#1a1d24'),
       g: C('#2b2f38'), G: C('#bfe3ff'), w: C('#ffffff'), K: C('#6b4226'), B: C('#7a4a2a'), q: C(d.cap ?? d.hair), y: C('#e8c47a'), Y: C('#c9a256'),
       r: C('#e04b4b'), n: C('#d4ecff'), M: C('#9aa3ae'), W: C('#8a5a32'), Z: C('#d9b75e'), v: C('#e3e8ee'),
-      L: C('#3fa37a'), D: C('#5bb8f0'),
+      L: C('#3fa37a'), D: C('#5bb8f0'), j: C('#d3dae3'), J: C('#8d97a5'),
     },
   }
 }
@@ -119,7 +147,9 @@ export const LOOK = {
   manager: look({ skin: '#f1c7a2', hair: '#3a2a1e', shirt: '#2c3550', tie: '#d97757', pants: '#232a3d' }),
   archivist: look({ skin: '#d9a47e', hair: '#d3d3d8', style: 'bun', shirt: '#8a64bd', inner: '#efe6d6', pants: '#3d3550', glasses: true }),
   typist: look({ skin: '#f2cfb0', hair: '#b8452e', style: 'long', shirt: '#e07fa6', inner: '#fff0f5', pants: '#3b3f4f' }),
-  it: look({ skin: '#8d5a3b', hair: '#1e1a17', shirt: '#3a9a84', inner: '#2f7566', pants: '#2b2f3a', headset: true }),
+  // The IT girl (approved Nov 2026, from the user's photo; hair "Open face"): long dark-brown hair down the sides, a
+  // side part, thin round glasses, silver headphones with a mic, the IT teal top.
+  it: look({ skin: '#f3d3bd', hair: '#4a2c1e', style: 'open', shirt: '#3a9a84', inner: '#2f7566', pants: '#2b2f3a', headset: true, silver: true, glasses: true, wire: true }),
   courier: look({ skin: '#e8b58e', hair: '#6b3e1e', style: 'cap', cap: '#e8a33d', shirt: '#d0603c', inner: '#f2e2c4', pants: '#3b4a6b', bag: true }),
   janitor: look({ skin: '#c98f6a', hair: '#4a3a2a', style: 'cap', cap: '#2f5f9e', shirt: '#3c6fb4', inner: '#e8eef7', pants: '#335f9c' }),
   researcher: look({ skin: '#f0c8a0', hair: '#2b2b2b', shirt: '#e6b432', inner: '#fff6dc', pants: '#3b3f4f', glasses: true }),
@@ -132,7 +162,8 @@ export const LOOK = {
     look({ skin: '#f3d0b4', hair: '#7a4a26', style: 'bun', shirt: '#56b4e9', inner: '#e6f5ff', badge: true }),
     look({ skin: '#f6d8c2', hair: '#e07b39', shirt: '#5b52d1', inner: '#e4e2fb', badge: true }),
     look({ skin: '#7a4a30', hair: '#121010', style: 'bun', shirt: '#b3cf32', inner: '#f3f9dc', badge: true }),
-    look({ skin: '#e2ae84', hair: '#3a2216', style: 'long', shirt: '#2fc4d6', inner: '#e3fbfd', badge: true }),
+    // Short hair: long dark hair and a blue-green top would look like the IT girl.
+    look({ skin: '#e2ae84', hair: '#3a2216', shirt: '#2fc4d6', inner: '#e3fbfd', badge: true }),
     look({ skin: '#a86b48', hair: '#1c1714', shirt: '#7f8a99', inner: '#e6eaef', badge: true, glasses: true }),
     look({ skin: '#f7e0d0', hair: '#efe3b8', shirt: '#d04bb8', inner: '#fbe3f6', badge: true }),
     look({ skin: '#5e3a26', hair: '#141110', shirt: '#8c2f47', inner: '#f3dde3', badge: true }),
@@ -140,7 +171,7 @@ export const LOOK = {
 }
 export const secLook = (n: number): Look => LOOK.sec[((n % LOOK.sec.length) + LOOK.sec.length) % LOOK.sec.length] ?? LOOK.manager
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch'
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom'
 /** `busy`: on a job — typing hands hop out and in (see workFx for the paper bits). */
 export type PersonOpts = { f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number; busy?: boolean }
 
@@ -157,11 +188,23 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
   })
   const put = (px: number, py: number, ch: string) => g.set(px + ',' + py, ch)
   const del = (px: number, py: number) => g.delete(px + ',' + py)
+  /** A step: the legs apart every other frame. */
+  const stepLegs = () => {
+    if (!(f % 2)) return
+    for (const [a, b] of [[2, 10], [4, 10], [2, 11], [4, 11], [1, 12], [2, 12], [4, 12], [5, 12]] as const) del(a, b)
+    for (const [a, b, ch] of [[2, 10, 'p'], [1, 11, 'p'], [4, 10, 'P'], [5, 11, 'P'], [0, 12, 'f'], [1, 12, 'f'], [5, 12, 'f'], [6, 12, 'f']] as const) put(a, b, ch)
+  }
   if (!L.tie) {
     put(3, 6, 'c')
     put(3, 7, 'c')
   }
-  if (L.style === 'long') for (const [a, b] of [[1, 3], [5, 3], [1, 4], [5, 4], [0, 4], [6, 4], [0, 5], [6, 5]] as const) put(a, b, 'h')
+  if (L.style === 'open') {
+    for (let r = 2; r <= 5; r++) {
+      put(0, r, 'h')
+      put(6, r, 'h')
+    }
+    put(2, 2, 'h')
+  } else if (L.style === 'long') for (const [a, b] of [[1, 3], [5, 3], [1, 4], [5, 4], [0, 4], [6, 4], [0, 5], [6, 5]] as const) put(a, b, 'h')
   else if (L.style === 'bun') {
     put(2, -1, 'h')
     put(3, -1, 'H')
@@ -174,9 +217,13 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
   if (L.glasses) {
     put(2, 3, 'G')
     put(4, 3, 'G')
-    put(3, 3, 'g')
+    put(3, 3, L.wire ? 'Y' : 'g')
   }
-  if (L.headset) {
+  if (L.headset && L.silver) {
+    // Silver headphones: a band curving over the head down to the ear cups, a mic by the mouth.
+    for (const [a, b] of [[2, -1], [3, -1], [4, -1], [1, 0], [5, 0], [0, 1], [6, 1]] as const) put(a, b, 'j')
+    for (const [a, b] of [[0, 2], [0, 3], [6, 2], [6, 3], [5, 4]] as const) put(a, b, 'J')
+  } else if (L.headset) {
     for (let i = 1; i <= 5; i++) put(i, -1, 'g')
     for (const [a, b] of [[0, 2], [0, 3], [6, 2], [6, 3]] as const) put(a, b, 'g')
   }
@@ -277,7 +324,9 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       put(8, 2, 's')
       put(9, 1, 'r')
       break
-    case 'broom': {
+    case 'broom':
+    case 'walkBroom': {
+      // Sweeping (standing, or along the hallway): the bristles swish, dust flies off.
       del(6, 8)
       put(6, 6, 's')
       for (const [a, b] of [[7, 4], [7, 5], [7, 6], [8, 7], [8, 8], [8, 9], [9, 10], [9, 11]] as const) put(a, b, 'W')
@@ -285,6 +334,9 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
       for (let i = 0; i < 4; i++) put(8 + i + bx, 12, 'Z')
       put(9 + bx, 11, 'Z')
       put(10 + bx, 11, 'Z')
+      put(12 + (f % 3), 11 - ((f >> 1) % 2), 'M')
+      if (f % 3 === 1) put(13, 9, 'v')
+      if (o.arms === 'walkBroom') stepLegs()
       break
     }
     case 'sleep':
@@ -361,9 +413,8 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
         put(7, 6, 'w')
         put(8, 6, 'w')
       }
+      stepLegs()
       if (f % 2) {
-        for (const [a, b] of [[2, 10], [4, 10], [2, 11], [4, 11], [1, 12], [2, 12], [4, 12], [5, 12]] as const) del(a, b)
-        for (const [a, b, ch] of [[2, 10, 'p'], [1, 11, 'p'], [4, 10, 'P'], [5, 11, 'P'], [0, 12, 'f'], [1, 12, 'f'], [5, 12, 'f'], [6, 12, 'f']] as const) put(a, b, ch)
         del(0, 8)
         put(0, 7, 's')
       }
@@ -519,18 +570,20 @@ export function windowPane(fb: FB, x: number, y: number, w: number, h: number, n
   fb.r(x, y + Math.floor(h / 2), w, 1, '#eef1f4')
   fb.r(x - 1, y + h, w + 2, 1, '#9aa3ae')
 }
+/** The wall clock: a dark rim round a white face, the hour hand up, the red second hand going round. */
 export function clock(fb: FB, x: number, y: number, f: number): void {
-  fb.r(x + 1, y, 3, 1, '#f6f7f9')
-  fb.r(x, y + 1, 5, 3, '#f6f7f9')
-  fb.r(x + 1, y + 4, 3, 1, '#f6f7f9')
+  fb.r(x + 1, y, 3, 1, '#4d5563')
+  fb.r(x, y + 1, 5, 3, '#4d5563')
+  fb.r(x + 1, y + 4, 3, 1, '#4d5563')
+  fb.r(x + 1, y + 1, 3, 3, '#f6f7f9')
   const hands = [[2, 1], [3, 1], [3, 2], [3, 3], [2, 3], [1, 3], [1, 2], [1, 1]] as const
   const [a, b] = hands[(f >> 1) % 8] ?? hands[0]
   fb.s(x + 2, y + 1, OUT)
   fb.s(x + 2, y + 2, OUT)
   fb.s(x + a, y + b, P.red)
 }
-/** The to-do board: one line per task (green done, amber doing, blue next), or boxes and arrows in plan mode. */
-export function board(fb: FB, x: number, y: number, w: number, h: number, todos: readonly ('done' | 'doing' | 'todo')[] | null, plan: boolean, f: number): void {
+/** The board with nothing on it, or boxes and arrows in plan mode (the to-do words: boardWords). */
+export function board(fb: FB, x: number, y: number, w: number, h: number, plan: boolean, f: number): void {
   fb.r(x, y, w, h, P.boardFrame)
   fb.r(x + 1, y + 1, w - 2, h - 2, P.board)
   fb.r(x + 2, y + h - 1, w - 4, 1, '#6d7682')
@@ -546,12 +599,6 @@ export function board(fb: FB, x: number, y: number, w: number, h: number, todos:
     }
     fb.r(x + 2, y + 6, Math.min(10, w - 4), 1, '#8a93a0')
     fb.r(x + 2, y + 8, 6, 1, '#8a93a0')
-  } else if (todos && todos.length) {
-    todos.slice(0, Math.floor((h - 2) / 2)).forEach((t, i) => {
-      const ry = y + 2 + i * 2
-      fb.s(x + 2, ry, t === 'done' ? P.green : t === 'doing' ? P.amber : '#8a93a0')
-      fb.r(x + 4, ry, Math.min([9, 7, 10, 6][i % 4] ?? 8, w - 6), 1, t === 'done' ? '#b8c0cc' : t === 'doing' ? '#d9822b' : P.ink)
-    })
   } else {
     fb.r(x + 3, y + 3, 7, 1, '#c5ccd6')
     fb.r(x + 3, y + 5, 4, 1, '#c5ccd6')
@@ -564,6 +611,54 @@ export function plant(fb: FB, x: number, y: number): void {
   fb.r(x + 1, y + 1, 3, 1, P.plant)
   fb.r(x, y + 2, 5, 1, P.plant2)
   fb.r(x + 1, y + 3, 3, 1, P.plant)
+}
+
+/** A small brass sign: a word on a desk front or on the wall over a station, one text row tall. */
+export const PLATE = '#e8c25a'
+const PLATE_INK = '#4a3510'
+export function plate(sc: Scene, cx: number, row: number, word: string): void {
+  const s = ' ' + word + ' '
+  sc.text(cx - Math.floor(s.length / 2), row, s, PLATE_INK, PLATE)
+}
+
+export type BoardItem = { text: string; state: 'done' | 'doing' | 'todo' }
+const BOARD_INK = { done: P.green, doing: '#d9822b', todo: P.ink } as const
+/**
+ * The to-do board with words (approved: "Words + Manager ticks"): one line per item, "v" done, ">" doing, "-" next,
+ * about 12 letters each. More than fit: a top line says how many done are above, the current one stays in view, a
+ * bottom line says how many more.
+ */
+export function boardWords(sc: Scene, x: number, y: number, w: number, h: number, items: readonly BoardItem[]): void {
+  const fb = sc.fb
+  fb.r(x, y, w, h, P.boardFrame)
+  fb.r(x + 1, y + 1, w - 2, h - 2, P.board)
+  fb.r(x + 2, y + h - 1, w - 4, 1, '#6d7682')
+  fb.s(x + 3, y + h - 1, P.red)
+  fb.s(x + 5, y + h - 1, P.ink)
+  // Text rows fully inside the white (a cell is two pixel rows), letters from the frame's inner edge.
+  const first = Math.ceil((y + 1) / 2)
+  const rows = Math.floor((y + h - 1) / 2) - first
+  const cols = w - 2
+  const n = items.length
+  let start = 0
+  let end = n
+  if (n > rows) {
+    const open = items.findIndex(t => t.state !== 'done')
+    const cur = open < 0 ? n : open
+    start = Math.max(0, Math.min(cur - 1, n - (rows - 1)))
+    let slots = start > 0 ? rows - 1 : rows
+    end = Math.min(n, start + slots)
+    if (end < n) end = start + --slots
+  }
+  const top = start > 0 ? 1 : 0
+  if (top) sc.text(x + 1, first, ('v ' + start + ' done').padEnd(cols, ' '), BOARD_INK.done, P.board)
+  items.slice(start, end).forEach((it, k) => {
+    const mark = it.state === 'done' ? 'v' : it.state === 'doing' ? '>' : '-'
+    const t = plain(it.text).replace(/\s+/g, ' ').trim()
+    const words = t.length <= cols - 2 ? t : t.slice(0, cols - 4) + '..'
+    sc.text(x + 1, first + top + k, (mark + ' ' + words).padEnd(cols, ' '), BOARD_INK[it.state], P.board)
+  })
+  if (end < n) sc.text(x + 1, first + top + (end - start), ('+ ' + (n - end) + ' more').padEnd(cols, ' '), '#8a93a0', P.board)
 }
 
 /* ===== bubbles ===== */
@@ -610,7 +705,8 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
   fb.r(x + W - 1, y + 1, 1, H - 2, OUT)
   fb.r(x + 1, y + 1, W - 2, H - 2, '#ffffff')
   fb.s(Math.max(x + 1, Math.min(cx, x + W - 2)), y + H, OUT)
-  const ink: Record<string, string> = { dots: '#2a2230', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6', check: '#2f9e57' }
+  // (Soft gray "…": black dots in a white box read like a little face.)
+  const ink: Record<string, string> = { dots: '#7d8aa0', ha: '#d9822b', heart: '#e04b4b', note: '#3a6fd6', bang: '#e04b4b', ask: '#3a6fd6', check: '#2f9e57' }
   const art: Record<string, string[]> = {
     dots: ['.....', '.....', '#.#.#', '.....'],
     ha: ['#.#..', '###.#', '#.#.#', '....#'],
@@ -668,20 +764,21 @@ export function zzz(fb: FB, f: number): void {
 
 const BUBBLE_INK: Record<Tone, string> = { '': '#2a2230', idle: '#2a2230', warn: '#b45309', bad: '#c62828', good: '#1f7a3f' }
 
-/** A white bubble with up to 10 ASCII characters, its tail pointing down at (cx, row*2+5). */
-export function textBubble(sc: Scene, cx: number, row: number, words: string, tone: Tone): void {
+/** A white bubble with up to 10 ASCII characters, its tail pointing down at (cx, row*2+5); it starts at `minX` or right of it. */
+export function textBubble(sc: Scene, cx: number, row: number, words: string, tone: Tone, minX = 0): void {
   const fb = sc.fb
-  const plain = words.replace(/…/g, '..').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?')
-  const str = plain.length <= 10 ? plain : plain.slice(0, 8) + '..'
+  const flat = plain(words).replace(/…/g, '..').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?')
+  const str = flat.length <= 10 ? flat : flat.slice(0, 8) + '..'
   const w = str.length
   const y = row * 2
-  const x = Math.max(2, Math.min(cx - Math.floor(w / 2), fb.w - w - 2))
+  const x = Math.min(fb.w - w - 2, Math.max(2, minX, cx - Math.floor(w / 2)))
   fb.r(x - 1, y - 1, w + 2, 4, '#ffffff')
   fb.r(x - 1, y - 2, w + 2, 1, OUT)
   fb.r(x - 1, y + 3, w + 2, 1, OUT)
   fb.r(x - 2, y - 1, 1, 4, OUT)
   fb.r(x + w + 1, y - 1, 1, 4, OUT)
   const tx = Math.max(x, Math.min(cx, x + w - 1))
+  sc.cover(x - 2, y - 2, x + w + 1, y + 5)
   fb.s(tx, y + 4, OUT)
   fb.s(tx, y + 5, OUT)
   sc.text(x, row, str, BUBBLE_INK[tone], '#ffffff')

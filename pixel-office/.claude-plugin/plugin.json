@@ -1,7 +1,7 @@
 {
   "name": "pixel-office",
-  "version": "0.3.0",
-  "description": "A lively pixel office in the right panel: Claude is the Manager, staff take the tool calls (and type the reply), work at their desks while Claude works and take breaks between turns, report each finished job to the Manager, agents sit at the front desks, and a list says who does what.",
+  "version": "0.4.0",
+  "description": "A lively pixel office in the right panel: Claude is the Manager, staff take the tool calls (and type the reply), work at their desks while Claude works and take breaks between turns, report each finished job to the Manager, agents sit at the front desks, brass signs say what each station does, the board shows the to-do list (the Manager ticks each done line), the Janitor sweeps the office while everyone steps out, and a list says who does what.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "thangdo19"

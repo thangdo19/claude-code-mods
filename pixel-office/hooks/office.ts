@@ -2,7 +2,7 @@
 // Pure: no Claude Code calls, easy to test.
 
 import type { Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
-import { fmtDuration } from './labels'
+import { fmtDuration, plain } from './labels'
 
 export const EMPTY: Office = {
   mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, bg: [],
@@ -36,9 +36,9 @@ export const ROLE_NAME: Record<Role, string> = {
 /** How a list line or bubble reads: plain, dim, warning, failure, success. */
 export type Tone = '' | 'warn' | 'bad' | 'good' | 'idle'
 
-/** Text made safe for a bubble: ASCII, at most `n` characters, ".." where it was cut. */
+/** Text made safe for a bubble: ASCII (accents dropped), at most `n` characters, ".." where it was cut. */
 export const ascii = (s: string, n: number): string => {
-  const a = s
+  const a = plain(s)
     .replace(/[…]/g, '...')
     .replace(/[×]/g, 'x')
     .replace(/[·•]/g, '-')
@@ -117,6 +117,31 @@ export const patchSec = (o: Office, id: string, patch: Partial<Sec>): Office =>
 /** How an agent's run ended: a teammate waits for its next message instead of finishing. */
 export const endStatus = (reason: string, teammate: boolean): SecStatus =>
   reason === 'answer' ? (teammate ? 'idle' : 'done') : 'fail'
+
+/** A task list's status as the board shows it ('deleted' is gone from the list). */
+const taskStatus = (s: unknown): Todo['status'] => (s === 'completed' || s === 'in_progress' ? s : 'pending')
+
+/** TaskCreate made a task: it goes on the board. */
+export const addTask = (todos: Todo[] | null, id: string, text: string): Todo[] => [...(todos ?? []).filter(t => t.id !== id), { id, text, status: 'pending' }]
+
+/** TaskUpdate changed a task: its status or words; 'deleted' takes it off the board. */
+export const patchTask = (todos: Todo[] | null, id: string, input: Record<string, unknown>): Todo[] | null => {
+  if (!todos?.some(t => t.id === id)) return todos
+  if (input.status === 'deleted') return todos.filter(t => t.id !== id)
+  return todos.map(t =>
+    t.id !== id ? t : { ...t, ...(input.status ? { status: taskStatus(input.status) } : {}), ...(typeof input.subject === 'string' && input.subject ? { text: input.subject } : {}) },
+  )
+}
+
+/** TaskList's answer: the whole task list. */
+export const tasksFrom = (result: unknown): Todo[] | null => {
+  const tasks = (result as { tasks?: unknown } | null)?.tasks
+  if (!Array.isArray(tasks)) return null
+  return tasks.flatMap(t => {
+    const x = t as { id?: unknown; subject?: unknown; status?: unknown }
+    return typeof x.id === 'string' && typeof x.subject === 'string' && x.subject ? [{ id: x.id, text: x.subject, status: taskStatus(x.status) }] : []
+  })
+}
 
 /** TodoWrite's list. */
 export const todosFrom = (input: Record<string, unknown>): Todo[] | null => {
@@ -248,6 +273,11 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
       tone = 'bad'
       break
   }
+  // Compacting: everyone stepped out while the Janitor cleans (unless the Manager is needed).
+  if (o.compacting && ['think', 'write', 'work', 'plan', 'idle'].includes(mood)) {
+    line = 'Stepped out while the Janitor cleans'
+    tone = ''
+  }
   return { now, mood, planning: o.plan, line, tone, frozen, night, workers, janitor: o.compacting, secs, todos: o.todos, bg: o.bg }
 }
 
@@ -292,10 +322,83 @@ export function lines(v: View, seated?: readonly (string | null)[], breakLine?: 
   return out
 }
 
-/** Lines cut to `max`, the last one saying how many were left out. */
-export function fitLines(all: Line[], max: number): Line[] {
+/* ===== the list, wrapped to the pane ===== */
+
+/** The name column: always this wide (it never shrinks for a long line). */
+export const WHO_W = 10
+/** The dot column ("● "). */
+export const DOT_W = 2
+/** A long line takes at most this many rows. */
+const MOST_ROWS = 3
+
+/** A character's width in terminal cells: 2 for wide (CJK, most emoji), 0 for accents and joiners, else 1. */
+export const cellWidth = (ch: string): number => {
+  const c = ch.codePointAt(0) ?? 0
+  if ((c >= 0x300 && c <= 0x36f) || c === 0x200d || (c >= 0xfe00 && c <= 0xfe0f)) return 0
+  if (
+    (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
+    (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) ||
+    (c >= 0x20000 && c <= 0x3fffd)
+  )
+    return 2
+  return 1
+}
+export const textWidth = (s: string): number => Array.from(s).reduce((n, ch) => n + cellWidth(ch), 0)
+
+/** The longest start of `s` at most `n` cells wide. */
+const take = (s: string, n: number): string => {
+  let out = ''
+  let w = 0
+  for (const ch of s) {
+    if (w + cellWidth(ch) > n) break
+    w += cellWidth(ch)
+    out += ch
+  }
+  return out
+}
+
+/**
+ * One list line as rows of a list `width` cells wide: the words go on below, under the words (not under the
+ * name), breaking after a space or a "/" in a path, never inside a name; at most three rows, the last ending "…".
+ */
+export function wrapLine(l: Line, width: number): Line[] {
+  const room = Math.max(8, width - DOT_W - WHO_W)
+  const rows: string[] = []
+  let cur = ''
+  for (const word of l.what.split(/(?<= )|(?<=\/)/)) {
+    if (textWidth(cur + word.trimEnd()) <= room) {
+      cur += word
+      continue
+    }
+    if (cur.trimEnd()) rows.push(cur.trimEnd())
+    cur = word
+    // One word wider than the row: cut where it must be.
+    while (textWidth(cur.trimEnd()) > room) {
+      const piece = take(cur, room)
+      rows.push(piece)
+      cur = cur.slice(piece.length)
+    }
+  }
+  if (cur.trimEnd() || !rows.length) rows.push(cur.trimEnd())
+  if (rows.length > MOST_ROWS) {
+    rows.length = MOST_ROWS
+    rows[MOST_ROWS - 1] = take(rows[MOST_ROWS - 1]!, room - 2).trimEnd() + ' …'
+  }
+  return rows.map((what, i) => (i ? { dot: '', who: '', what, tone: l.tone } : { ...l, what }))
+}
+
+/** The lines as rows of a list `width` wide, whole lines only, in `max` rows; the last row says how many were left out. */
+export function fitRows(all: Line[], width: number, max: number): Line[] {
   if (max <= 0) return []
-  if (all.length <= max) return all
-  const kept = all.slice(0, Math.max(0, max - 1))
-  return [...kept, { dot: '', who: '', what: '+' + (all.length - kept.length) + ' more', tone: 'idle' }]
+  const items = all.map(l => wrapLine(l, width))
+  if (items.reduce((n, r) => n + r.length, 0) <= max) return items.flat()
+  const out: Line[] = []
+  let k = 0
+  for (; k < items.length && out.length + items[k]!.length <= max - 1; k++) out.push(...items[k]!)
+  // Not even the first line fits whole: as much of it as fits.
+  if (!k && max > 1) {
+    out.push(...items[0]!.slice(0, max - 1))
+    k = 1
+  }
+  return [...out, { dot: '', who: '', what: '+' + (all.length - k) + ' more', tone: 'idle' }]
 }

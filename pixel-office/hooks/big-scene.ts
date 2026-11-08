@@ -4,8 +4,8 @@
 
 import type { Role, Sec } from '../types'
 import {
-  board, cabinet, clock, coffeeMachine, desk, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, rack,
-  room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type Look,
+  board, boardWords, cabinet, clock, coffeeMachine, desk, door, drawPerson, globe, iconBubble, LOOK, monitor, officeChair, P, plant, plate,
+  rack, room, Scene, secLook, textBubble, thinkBubble, typewriter, waterCooler, windowPane, workFx, zzz, type Arms, type BoardItem, type Look,
 } from './big-sprites'
 import type { Tone, View } from './office'
 import { DESK_OWNER, DESKS, isRole, SPOTS, type BigSim } from './big-walk'
@@ -24,8 +24,13 @@ const URGENT = new Set(['permission', 'ask', 'done', 'stopped', 'hold'])
 /** How someone on a break holds their arms. */
 const BREAK_ARMS: Record<ActKind, Arms> = {
   sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
-  read: 'read', tidy: 'tidy', stretch: 'stretch', report: 'talk',
+  read: 'read', tidy: 'tidy', stretch: 'stretch', report: 'talk', tick: 'point',
 }
+/** What each station does, on its brass sign (approved: "Signs only"); a front desk an agent sits at says AGENT. */
+const SIGN: Record<Role, string> = { archivist: 'FILES', it: 'BASH', courier: 'MAIL', typist: 'EDIT', researcher: 'WEB', planner: 'PLAN', librarian: 'SKILL' }
+const DESK_SIGN = ['WEB', 'PLAN', 'SKILL', 'AGENT']
+/** The IT girl's bubble starts here: right of the board's frame (x 31–46), its border included. */
+const IT_BUBBLE_X = 48
 /** The spots where a finished job is reported to the Manager. */
 const REPORT_AT = ['rep0', 'rep1']
 /** How each worker holds their arms on a job. */
@@ -44,12 +49,19 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const busy = (r: Role) => v.workers[r]?.state === 'work'
   const life = sim.life
   const hereAt = (spot: string) => [...sim.actors.values()].some(a => a.dest === spot && a.arrivedAt >= 0 && !a.leaving)
+  /** Walking legs: with the distance walked for a slow stroll (no skating), else every tick. */
+  const legs = (a: { speed: number; t: number }) => (a.speed < 2 ? Math.floor(a.t / 2) : tick)
 
   room(fb)
   door(fb, 2, 4, 8, 17, sim.doorOpen())
   clock(fb, 25, 2, F)
-  const todos = v.todos?.map(t => (t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'doing' : 'todo') as 'done' | 'doing' | 'todo') ?? null
-  board(fb, 31, 2, 16, 11, todos, meeting(v), F)
+  // The to-do words; a done line shows as done once the Manager has ticked it. The meeting draws the plan.
+  const items: BoardItem[] = (v.todos ?? []).map(t => ({
+    text: t.text,
+    state: t.status === 'completed' ? (life.ticked.has(t.text) ? 'done' : 'doing') : t.status === 'in_progress' ? 'doing' : 'todo',
+  }))
+  if (!meeting(v) && items.length) boardWords(sc, 31, 2, 16, 13, items)
+  else board(fb, 31, 2, 16, 11, meeting(v), F)
   windowPane(fb, 58, 2, 6, 10, v.night, F)
   const it = v.workers.it
   at(20.5, () => {
@@ -57,12 +69,18 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     cabinet(fb, 16, 8, 4, 13, busy('archivist'), F)
     cabinet(fb, 20, 8, 4, 13, false, F)
     rack(fb, 51, 5, 6, 16, it?.state === 'error' ? 'error' : it?.state === 'work' ? 'busy' : 'idle', F, v.bg.length)
+    // Signs on the wall over the cabinets (left of where the Archivist's bubble shows) and the rack.
+    plate(sc, 18, 3, SIGN.archivist)
+    plate(sc, 54, 1, SIGN.it)
     coffeeMachine(fb, 58, 13, hereAt('coffee'), F)
   })
   at(41.4, () => {
-    fb.r(26, 26, 11, 15, P.chair)
-    fb.r(27, 27, 9, 13, P.chair2)
+    // The Manager's leather chair: a rounded top, a buttoned back.
     fb.r(27, 26, 9, 1, '#8a4a35')
+    fb.r(26, 27, 11, 13, P.chair)
+    fb.r(27, 28, 9, 11, P.chair2)
+    fb.r(27, 27, 9, 1, '#7a4230')
+    for (const [x, y] of [[31, 30], [29, 32], [33, 32], [31, 34], [29, 36], [33, 36]] as const) fb.s(x, y, '#4a2a1e')
   })
   at(41.5, () => {
     officeChair(fb, 2, 33, 9, 9)
@@ -70,6 +88,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   })
   at(44.5, () => {
     desk(fb, 0, 39, 16, 6)
+    plate(sc, 8, 21, SIGN.courier)
     globe(fb, 10, 32, busy('courier'), F)
     desk(fb, 23, 39, 20, 6)
     fb.r(30, 41, 5, 1, P.gold)
@@ -77,8 +96,10 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     monitor(fb, 24, 33, ['think', 'write', 'work', 'permission', 'ask', 'plan'].includes(v.mood), F, gaming)
     fb.r(37, 38, 3, 1, '#fbfbf7')
     fb.r(38, 37, 3, 1, '#ecebe4')
-    plant(fb, 39, 31)
+    // On the desk: the pot's foot on the desk top (y 39).
+    plant(fb, 39, 32)
     desk(fb, 49, 39, 15, 6)
+    plate(sc, 56, 21, SIGN.typist)
     typewriter(fb, 58, 39, busy('typist'), F)
   })
   const seated = sim.seated()
@@ -92,6 +113,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     at(57.5, () => officeChair(fb, dx + 1, 49, 9, 9))
     at(61.5, () => {
       desk(fb, dx, 55, 15, 7)
+      plate(sc, dx + 7, 29, id ? 'AGENT' : (DESK_SIGN[i] ?? 'AGENT'))
       monitor(fb, dx + 9, 49, (here && sec?.status === 'run') || ownerWorks, F + i)
       if (viewing && id === viewing) {
         fb.r(dx, 45, 15, 1, P.spot)
@@ -101,7 +123,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     })
   }
 
-  const bubbles: [number, number, string, Tone][] = []
+  const bubbles: [number, number, string, Tone, number?][] = []
   const icons: [number, number, Icon][] = []
   const thoughts: [number, number][] = []
 
@@ -132,14 +154,14 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         arms = BREAK_ARMS[act]
         smile = act === 'game' || act === 'chat' || act === 'visit'
       } else if (seat) arms = MANAGER_ARMS[v.mood] ?? 'down'
-      else if (a.dest === 'board' && here) arms = v.mood === 'plan' ? 'point' : MANAGER_ARMS[v.mood] ?? 'down'
+      else if (a.dest === 'board' && here) arms = v.mood === 'plan' || life.pending.length || sim.tick < life.tickShow ? 'point' : MANAGER_ARMS[v.mood] ?? 'down'
       else arms = sim.tick < life.bangUntil ? 'point' : v.mood === 'think' ? 'chin' : 'down'
       if (napping) arms = 'sleep'
       eyes = napping ? 'closed' : undefined
       smile ||= v.mood === 'done' || (seat && REPORT_AT.some(hereAt))
       const key = seat ? 42 : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
-      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? tick : F, arms: pose, eyes, smile }))
+      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? legs(a) : F, arms: pose, eyes, smile }))
       const b = MANAGER_BUBBLE[v.mood]
       if (seat) {
         if (napping) at(99, () => zzz(fb, F))
@@ -178,7 +200,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       }
     } else if (a.id === 'janitor') {
       lk = LOOK.janitor
-      arms = 'broom'
+      // Sweeping the whole office: the broom goes along on the walk (in and out too).
+      arms = walking ? 'walkBroom' : 'broom'
     } else if (isRole(a.id)) {
       const role = a.id
       const w = v.workers[role]
@@ -209,21 +232,33 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
 
     if (a.leaving) bubble = null
     const person = lk
-    const pose = walking && arms !== 'walkMug' ? 'walk' : arms
+    const pose = walking && arms !== 'walkMug' && arms !== 'walkBroom' ? 'walk' : arms
     const busyNow = working && here
     // At work everything moves every tick (8 a second); otherwise at the calm 4; after Esc nothing moves.
-    const pf = v.frozen ? F + a.id.length : walking || busyNow ? tick : F + a.id.length
+    const pf = v.frozen ? F + a.id.length : walking ? legs(a) : busyNow ? tick : F + a.id.length
     at(sitting ? spot.feet : py, () => {
       drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow })
       if (busyNow) workFx(fb, px, top, pf)
     })
-    if (here && bubble && a.id !== 'janitor') bubbles.push([spot.x + 3, bubbleRow(spot.feet), bubble[0], bubble[1]])
+    // The IT girl's bubble starts right of the board, so it never covers the to-do words.
+    const minX = a.id === 'it' && a.dest === 'it' ? IT_BUBBLE_X : 0
+    if (here && bubble && a.id !== 'janitor') bubbles.push([spot.x + 3, bubbleRow(spot.feet), bubble[0], bubble[1], minX])
   }
 
   draws.sort((a, b) => a[0] - b[0]).forEach(([, fn]) => fn())
-  for (const [x, y] of thoughts) thinkBubble(fb, x, y, F, life.think)
-  for (const [cx, bottom, ic] of icons) iconBubble(fb, cx, bottom, ic)
-  for (const [cx, row, words, tone] of bubbles) textBubble(sc, cx, row, words, tone)
+  // A bubble goes over any letters under it (a sign, the board), and so does a person in front of them (settle).
+  for (const [x, y] of thoughts) {
+    const bx = Math.max(0, Math.min(x, fb.w - 9))
+    sc.cover(bx, y, bx + 8, y + 9)
+    thinkBubble(fb, x, y, F, life.think)
+  }
+  for (const [cx, bottom, ic] of icons) {
+    const bx = Math.max(0, Math.min(cx - 3, fb.w - 7))
+    sc.cover(bx, bottom - 7, bx + 6, bottom)
+    iconBubble(fb, cx, bottom, ic)
+  }
+  for (const [cx, row, words, tone, minX] of bubbles) textBubble(sc, cx, row, words, tone, minX)
+  sc.settle()
   return sc
 }
 

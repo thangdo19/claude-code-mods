@@ -10,7 +10,7 @@ import { LINGER_MS, ROLE_NAME, ROLES, type View } from './office'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
 export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'
-export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'read' | 'tidy' | 'stretch' | 'report'
+export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'read' | 'tidy' | 'stretch' | 'report' | 'tick'
 /** Someone with a life: a role, or 'manager'. */
 type Who = Role | 'manager'
 type Act = { kind: ActKind; spot: string; until: number; partner?: Who }
@@ -44,6 +44,15 @@ const CHAT_ICONS: Icon[] = ['dots', 'ha', 'heart', 'note']
 const MEET_ICONS: Icon[] = ['ask', 'bang', 'dots']
 const NAME = (w: Who) => (w === 'manager' ? 'Manager' : ROLE_NAME[w])
 
+/** Calm (approved Nov 2026: "people move too much"): every break or desk thing lasts this many times longer. */
+const PACE = 2
+/** At most this many set off for a break thing at once; the next keeps at it up to HOLD_MAX ticks (2 s) more. */
+const SETTING_OFF = 2
+const HOLD_MAX = 16
+/** Ticks between two ticks on the board, and how long the check shows after the last one. */
+const TICK_EVERY = 6
+const TICK_SHOW = 14
+
 /** A job or agent running this long (ms) brings the Manager over. */
 export const SLOW_MS = 1500
 /** Ticks the Manager stays where they arrived (3 s). */
@@ -72,6 +81,8 @@ export const meeting = (v: View): boolean => v.planning && ['plan', 'permission'
 export const managerFree = (v: View): boolean => v.mood === 'idle' && !v.night
 /** Claude's turn is on: breaks are over, everyone is at their own desk. */
 export const workTime = (v: View): boolean => !v.night && ['think', 'write', 'work', 'permission', 'ask', 'plan'].includes(v.mood)
+/** Compacting: the Janitor cleans, staff and the Manager step out (approved: "Staff out, busy agents stay"). */
+export const cleaning = (v: View): boolean => v.janitor
 
 export class Life {
   readonly acts = new Map<Who, Act>()
@@ -88,14 +99,42 @@ export class Life {
   /** The Typist was typing Claude's reply last tick; when the reply ended (a finish to report). */
   private typingReply = false
   private replyEnded = -Infinity
+  /** Since when someone has kept at it because enough people are setting off already. */
+  private readonly held = new Map<Who, number>()
+  /** The Manager stepped out (the Janitor cleans): walks back in rather than appearing. */
+  private managerOut = false
+  /** To-do lines the Manager has ticked on the board, and done lines still to tick (in order). */
+  readonly ticked = new Set<string>()
+  pending: string[] = []
+  private primed = false
+  private tickAt = -1
+  /** Until this tick the Manager shows a check at the board. */
+  tickShow = -1
 
   /** Who is in the office: staff come for the workday, go home at night; the Manager is always in. */
   sync(sim: BigSim, v: View, instant: boolean): void {
-    if (!sim.actors.has('manager')) sim.goTo('manager', meeting(v) ? 'board' : 'chair', { instant: true })
+    const out = cleaning(v)
+    const m = sim.actors.get('manager')
+    if (out) {
+      // The Janitor cleans: the Manager steps out too.
+      if (m && !m.leaving) {
+        this.endAct('manager')
+        if (instant) sim.remove('manager')
+        else sim.goTo('manager', 'door', { leaving: true })
+      }
+      this.managerOut = true
+    } else if (!m) {
+      sim.goTo('manager', meeting(v) ? 'board' : 'chair', this.managerOut && !instant ? {} : { instant: true })
+      this.managerOut = false
+    } else if (m.leaving) {
+      // Done before the Manager was out of the door: back in.
+      sim.goTo('manager', meeting(v) ? 'board' : 'chair')
+      this.managerOut = false
+    }
     let k = 0
     for (const r of ROLES) {
       const job = v.workers[r] !== undefined
-      const inside = job || !v.night
+      const inside = job || (!v.night && !out)
       const a = sim.actors.get(r)
       if (inside && (!a || a.leaving)) {
         this.endAct(r)
@@ -110,6 +149,7 @@ export class Life {
   }
 
   step(sim: BigSim, v: View): void {
+    this.board(sim, v)
     this.manager(sim, v)
     const reply = v.workers.typist?.note === 'reply'
     if (this.typingReply && !reply) this.replyEnded = v.now
@@ -138,14 +178,24 @@ export class Life {
         free.push(r)
       }
     }
-    if (managerFree(v)) free.push('manager')
+    const boss = sim.actors.get('manager')
+    if (managerFree(v) && boss && !boss.leaving) free.push('manager')
     for (const r of free) {
       const act = this.acts.get(r)
       // Just in, or on the way to their own place: there first. (In work time, never on to a break spot.)
       // (Never on to their desk once an agent has it.)
       const blocked = r !== 'manager' && sim.borrowed(r) && sim.actors.get(r)?.dest === HOME[r]
       if (!act && !sim.here(r) && !blocked && (!work || r === 'manager' || ownPlace(sim, r))) continue
-      if (act && this.valid(sim, r, act, free, v) && sim.tick < act.until) continue
+      const ok = !!act && this.valid(sim, r, act, free, v)
+      if (ok && sim.tick < act!.until) continue
+      // Ticking the board: until every done line has its tick.
+      if (r === 'manager' && act?.kind === 'tick' && (this.pending.length || sim.tick < this.tickShow)) continue
+      // Enough people setting off already: keep at it a moment longer (2 s at most, so nobody is stuck).
+      if (ok && !work && sim.here(r) && this.settingOff(sim, free) >= SETTING_OFF) {
+        const since = this.held.get(r) ?? sim.tick
+        this.held.set(r, since)
+        if (sim.tick - since < HOLD_MAX) continue
+      }
       this.next(sim, r, free, v)
     }
     const want = v.mood === 'think' ? 3 : 0
@@ -154,6 +204,33 @@ export class Life {
     else if (++this.thinkClock >= 2) {
       this.thinkClock = 0
       this.think = want > this.think ? this.think + 1 : this.think === 3 ? 1 : 0
+    }
+  }
+
+  /** People on the way to a break thing now (not counting the walk back to a job). */
+  private settingOff(sim: BigSim, free: Who[]): number {
+    return free.filter(p => this.acts.has(p) && !sim.here(p) && !sim.actors.get(p)?.leaving).length
+  }
+
+  /**
+   * The board (approved: "Words + Manager ticks"): a to-do line shows as done once the Manager has ticked it. New done
+   * lines wait in `pending`; while the Manager is at the board, one is ticked every TICK_EVERY ticks. A reload ticks
+   * what is done already, so nothing is walked over again.
+   */
+  private board(sim: BigSim, v: View): void {
+    const done = (v.todos ?? []).filter(t => t.status === 'completed').map(t => t.text)
+    for (const t of [...this.ticked]) if (!done.includes(t)) this.ticked.delete(t)
+    this.pending = this.pending.filter(t => done.includes(t) && !this.ticked.has(t))
+    if (!this.primed) {
+      this.primed = true
+      for (const t of done) this.ticked.add(t)
+      return
+    }
+    for (const t of done) if (!this.ticked.has(t) && !this.pending.includes(t)) this.pending.push(t)
+    if (this.pending.length && sim.here('manager', 'board') && sim.tick >= this.tickAt) {
+      this.ticked.add(this.pending.shift()!)
+      this.tickAt = sim.tick + TICK_EVERY
+      this.tickShow = sim.tick + TICK_SHOW
     }
   }
 
@@ -176,6 +253,7 @@ export class Life {
   icon(sim: BigSim, v: View, id: string): Icon | null {
     const t = sim.tick
     if (id === 'manager' && t < this.bangUntil) return 'bang'
+    if (id === 'manager' && t < this.tickShow && sim.here('manager', 'board')) return 'check'
     if (!isWho(id)) return null
     const mine = this.acts.get(id)
     if (mine?.kind === 'report') return sim.here(id, mine.spot) ? 'check' : null
@@ -199,14 +277,19 @@ export class Life {
 
   /** Who is on a break (or in the meeting), for the list. */
   breakLine(sim: BigSim, v: View): { who: string; what: string } | null {
+    if (cleaning(v)) return { who: 'Out', what: 'Staff stepped out until the Janitor is done' }
     const inside: Who[] = ROLES.filter(r => sim.actors.has(r) && !sim.actors.get(r)!.leaving && !v.workers[r])
-    if (managerFree(v)) inside.unshift('manager')
+    if (managerFree(v) && sim.actors.has('manager')) inside.unshift('manager')
     if (!inside.length) return null
-    if (meeting(v)) return { who: 'Meeting', what: inside.map(NAME).join(', ') + ' at the board' }
+    if (meeting(v)) {
+      // Everyone (approved "Both": a short word when it's everyone, the names otherwise).
+      const all = inside.length === ROLES.filter(r => sim.actors.has(r) && !sim.actors.get(r)!.leaving).length
+      return { who: 'Meeting', what: all ? 'Everyone at the board' : inside.map(NAME).join(', ') + ' at the board' }
+    }
     const what: Record<ActKind, string> = {
       sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
       plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting',
-      read: 'reading', tidy: 'tidying up', stretch: 'stretching', report: 'reporting to the Manager',
+      read: 'reading', tidy: 'tidying up', stretch: 'stretching', report: 'reporting to the Manager', tick: 'ticking the board',
     }
     if (workTime(v)) {
       const parts = inside.map(r => {
@@ -246,6 +329,7 @@ export class Life {
 
   /** Ends `r`'s activity; a chat ends for both. */
   private endAct(r: Who): void {
+    this.held.delete(r)
     const act = this.acts.get(r)
     if (!act) return
     this.acts.delete(r)
@@ -253,6 +337,7 @@ export class Life {
   }
 
   private start(sim: BigSim, r: Who, kind: ActKind, spot: string, ticks: number, partner?: Who, hurry = false): number {
+    if (kind !== 'report' && kind !== 'tick') ticks *= PACE
     const a = sim.goTo(r, spot, hurry ? { hurry: true } : {})
     const walk = Math.ceil((a.length - a.t) / a.speed) + a.delay
     const act: Act = { kind, spot, until: sim.tick + walk + ticks, partner }
@@ -286,6 +371,11 @@ export class Life {
   private next(sim: BigSim, r: Who, free: Who[], v: View): void {
     const prev = this.acts.get(r)
     this.endAct(r)
+    // A done line on the board not ticked yet (it finished while the Manager was busy): first thing on a break.
+    if (r === 'manager' && this.pending.length) {
+      this.start(sim, r, 'tick', 'board', 8)
+      return
+    }
     const homeOk = r === 'manager' || !sim.borrowed(r)
     const home = HOME[r]
     if (workTime(v) && r !== 'manager') {
@@ -349,17 +439,19 @@ export class Life {
 
   private manager(sim: BigSim, v: View): void {
     const m = sim.actors.get('manager')
-    if (!m || managerFree(v)) return
+    if (!m || m.leaving || managerFree(v)) return
     const mood = v.mood
     // Back to work: the break is over.
     const wasOnBreak = this.acts.has('manager')
     if (wasOnBreak) this.endAct('manager')
     const urgent = ['permission', 'ask', 'hold', 'stopped', 'done'].includes(mood)
+    // A done line on the board not ticked yet: over to tick it (not while you're needed or the reply is dictated).
+    const ticking = this.pending.length > 0 || (sim.tick < this.tickShow && m.dest === 'board')
     let goal = 'chair'
     if (meeting(v)) goal = 'board'
-    else if (!urgent && mood !== 'write' && mood !== 'idle') goal = this.watch(sim, v)
+    else if (!urgent && mood !== 'write' && mood !== 'idle') goal = ticking ? 'board' : this.watch(sim, v)
     // Someone is coming to report or reporting: the Manager hears them out at the desk first.
-    if (goal !== 'chair' && goal !== 'board' && m.dest === 'chair' && REPORT_SPOTS.some(s => taken(sim, s, 'manager'))) goal = 'chair'
+    if (goal !== 'chair' && !meeting(v) && m.dest === 'chair' && REPORT_SPOTS.some(s => taken(sim, s, 'manager'))) goal = 'chair'
     const away = m.dest.startsWith('sup') || m.dest.startsWith('patrol')
     // Once somewhere, the Manager stays a moment (no back and forth), unless needed at the desk.
     if (away && goal !== m.dest && !urgent && mood !== 'write' && !meeting(v) && m.arrivedAt >= 0 && sim.tick - m.arrivedAt < STAY) goal = m.dest

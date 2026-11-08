@@ -3,7 +3,10 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Mood, Office } from '../types'
 import { describe, oneLine, questionOf } from './labels'
-import { addSec, EMPTY, endJob, endStatus, endTurn, fitLines, lines, patchSec, setMood, startJob, startTurn, todosFrom, view, type Line, type Tone, type View } from './office'
+import {
+  addSec, addTask, DOT_W, EMPTY, endJob, endStatus, endTurn, fitRows, lines, patchSec, patchTask, setMood, startJob, startTurn, tasksFrom, todosFrom, view, WHO_W,
+  type Line, type Tone, type View,
+} from './office'
 import { bigCells } from './big-cells'
 import { BIG_COLS, BIG_ROWS, renderBig } from './big-scene'
 import { BigSim } from './big-walk'
@@ -228,8 +231,19 @@ export const register: Register = on => {
         else if (label.who !== 'manager') {
           const role = label.who
           const bg = (tool === 'Bash' || tool === 'PowerShell') && input.run_in_background === true && !failed
+          // The task tools write the board too (TaskCreate gives the new task's id; TaskList the whole list).
+          const out = failed ? undefined : (result.result as Record<string, unknown> | undefined)
+          const task = out?.task as { id?: unknown; subject?: unknown } | undefined
+          const tasks = (o: Office): Office => {
+            if (failed) return o
+            const subject = typeof task?.subject === 'string' && task.subject ? task.subject : typeof input.subject === 'string' ? input.subject : ''
+            if (tool === 'TaskCreate' && typeof task?.id === 'string' && subject) return { ...o, todos: addTask(o.todos, task.id, subject) }
+            if (tool === 'TaskUpdate' && typeof input.taskId === 'string') return { ...o, todos: patchTask(o.todos, input.taskId, input) }
+            if (tool === 'TaskList') return { ...o, todos: tasksFrom(out) ?? o.todos }
+            return o
+          }
           await change($, (o, now) => {
-            const ended = endJob(o, id, role, { short: label.short, full: label.full, err: failed && !denied, denied, endedAt: now })
+            const ended = endJob(tasks(o), id, role, { short: label.short, full: label.full, err: failed && !denied, denied, endedAt: now })
             const calm = ended.mood === 'permission' ? setMood(ended, 'work', now) : ended
             return bg ? { ...calm, bg: [...calm.bg, label.full.replace(/^\$ /, '').replace(/ \(in background\)$/, '')].slice(-8) } : calm
           })
@@ -344,7 +358,8 @@ export const register: Register = on => {
   // Compacting the main conversation: the janitor comes in.
   on('session.compact', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    await change($, o => ({ ...o, compacting: true })).catch(() => {})
+    // (It counts as activity: a /compact at night wakes the office before the Janitor comes.)
+    await change($, (o, now) => ({ ...o, compacting: true, lastActivity: now })).catch(() => {})
     try {
       return await next(e)
     } finally {
@@ -374,21 +389,34 @@ export const register: Register = on => {
     const all = lines(v, shape ? bigSim.seated() : undefined, shape ? bigSim.breakLine(v) : null, shape ? id => bigSim.lookOf(id) : undefined)
     lastList = listKey(all)
     const beside = shape?.kind === 'cam' && shape.beside
-    const shown = fitLines(all, Math.max(1, beside ? rows : rows - (shape?.rows ?? 0)))
-    const whoWidth = 10
+    // The list's own width (beside the camera: what the camera and the gap leave); long lines wrap within it.
+    const listCols = beside ? cols - shape.cols - 1 : cols
+    const shown = fitRows(all, listCols, Math.max(1, beside ? rows : rows - (shape?.rows ?? 0)))
+
+    const { Box, Text } = $.ui.resolve(e)
+    /** One list row: the dot and name columns keep their width (a long line never squeezes them), the words fill the rest. */
+    const row = (l: Line, dimIdle: boolean) => (
+      <Box flexDirection="row">
+        <Box width={DOT_W} flexShrink={0}>
+          <Text color={l.dot || undefined}>{l.dot ? '●' : ' '}</Text>
+        </Box>
+        <Box width={WHO_W} flexShrink={0}>
+          <Text bold dimColor={dimIdle && l.tone === 'idle'}>
+            {pad(l.who, WHO_W)}
+          </Text>
+        </Box>
+        <Text color={TONE_COLOR[l.tone]} wrap="truncate-end">
+          {l.what}
+        </Text>
+      </Box>
+    )
 
     if (e.surface === 'terminal' && shape) {
-      const { Box, Text, Raster } = $.ui.resolve(e)
+      const { Raster } = $.ui.resolve(e)
       const c = draw(v, shape, viewing)
       mounted = { shape, inline: e.props.placement === 'inline', viewing }
       lastCells = c.cells
-      const list = shown.map(l => (
-        <Box flexDirection="row">
-          <Text color={l.dot || undefined}>{l.dot ? '● ' : '  '}</Text>
-          <Text bold dimColor={l.tone === 'idle'}>{pad(l.who, whoWidth)}</Text>
-          <Text color={TONE_COLOR[l.tone]} wrap="truncate-end">{l.what}</Text>
-        </Box>
-      ))
+      const list = shown.map(l => row(l, true))
       const picture = <Raster key="office" columns={c.columns} rows={c.rows} cells={c.cells} />
       return beside ? (
         <Box flexDirection="row">
@@ -405,17 +433,6 @@ export const register: Register = on => {
       )
     }
     mounted = null
-    const { Box, Text } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="column">
-        {shown.map(l => (
-          <Box flexDirection="row">
-            <Text color={l.dot || undefined}>{l.dot ? '● ' : '  '}</Text>
-            <Text bold>{pad(l.who, whoWidth)}</Text>
-            <Text color={TONE_COLOR[l.tone]} wrap="truncate-end">{l.what}</Text>
-          </Box>
-        ))}
-      </Box>
-    )
+    return <Box flexDirection="column">{shown.map(l => row(l, false))}</Box>
   })
 }
