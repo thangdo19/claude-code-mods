@@ -11,6 +11,8 @@ export type Job = {
   /** The whole action for the list ("Read src/auth.ts"). */
   full: string
   startedAt: number
+  /** Busy only for a moment (BRIEF_MS) though the call runs on: briefing a new agent. */
+  brief?: boolean
 }
 
 /** The last call a worker finished: drives the coffee break and the red ✗. */

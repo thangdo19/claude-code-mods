@@ -9,8 +9,10 @@ export const EMPTY: Office = {
   secs: [], todos: null, compacting: false, lastActivity: 0, order: 0,
 }
 
-/** A worker with nothing left to do stays at their station this long, then is free (a break). */
+/** A worker with nothing left to do counts as just finished this long (they report it, then are free). */
 export const LINGER_MS = 6_000
+/** Briefing a new agent keeps the Planner busy this long, though the Agent call runs until the agent is done. */
+export const BRIEF_MS = 2_000
 /** A finished secretary cheers this long, then walks out. */
 export const CHEER_MS = 4_000
 /** A red ✗ stays this long. */
@@ -50,9 +52,12 @@ export const ascii = (s: string, n: number): string => {
 export const DOT = {
   manager: '#d7875f', archivist: '#af87d7', typist: '#d787af', it: '#00afaf', courier: '#ff8700', janitor: '#5f87d7', wait: '#8a8a8a',
   researcher: '#d7af00', planner: '#87af5f', librarian: '#af875f',
-  sec: ['#00afaf', '#af87d7', '#ffaf5f', '#5f87d7'],
+  // The agents' eight looks (LOOK.sec in big-sprites.ts, same order).
+  sec: ['#ff5f5f', '#5fafff', '#5f5fd7', '#afd700', '#00d7d7', '#a0a8b4', '#d75fd7', '#af005f'],
 } as const
-export const secDot = (n: number): string => DOT.sec[((n % 4) + 4) % 4] ?? DOT.wait
+/** How many looks agents have: up to 8 can be in the office at once (4 desks, 3 in line, 1 walking out). */
+export const SEC_LOOKS = DOT.sec.length
+export const secDot = (n: number): string => DOT.sec[((n % SEC_LOOKS) + SEC_LOOKS) % SEC_LOOKS] ?? DOT.wait
 
 /* ===== changes ===== */
 
@@ -80,12 +85,20 @@ export const endTurn = (o: Office, reason: string, aborted: boolean, durationMs:
 
 export const startJob = (o: Office, job: Job): Office => ({ ...o, jobs: [...o.jobs.filter(j => j.id !== job.id), job].slice(-40), lastActivity: job.startedAt })
 
-export const endJob = (o: Office, id: string, role: Role, last: LastJob): Office => ({
-  ...o,
-  jobs: o.jobs.filter(j => j.id !== id),
-  last: { ...o.last, [role]: last },
-  lastActivity: last.endedAt,
-})
+/** When a brief job counts as finished: BRIEF_MS after it started. */
+const briefEnd = (j: Job): number => j.startedAt + BRIEF_MS
+
+export const endJob = (o: Office, id: string, role: Role, last: LastJob): Office => {
+  const job = o.jobs.find(j => j.id === id)
+  // A briefing long over (its agent ran; now the call returns) was already finished and reported:
+  // it finishes again only when it failed. The newer finish is kept.
+  let done = last
+  if (job?.brief && !last.err && !last.denied && last.endedAt >= briefEnd(job)) {
+    const prev = o.last[role]
+    done = prev && prev.endedAt >= briefEnd(job) ? prev : { ...last, endedAt: briefEnd(job) }
+  }
+  return { ...o, jobs: o.jobs.filter(j => j.id !== id), last: { ...o.last, [role]: done }, lastActivity: last.endedAt }
+}
 
 export const addSec = (o: Office, sec: Omit<Sec, 'order'>): Office => {
   const prev = o.secs.find(s => s.id === sec.id)
@@ -118,7 +131,8 @@ export const todosFrom = (input: Record<string, unknown>): Todo[] | null => {
 
 /* ===== what it looks like now ===== */
 
-export type Worker = { role: Role; state: 'work' | 'linger' | 'error'; short: string; full: string; jobs: string[]; since: number }
+/** `note`: 'reply' — the Typist types Claude's reply (no tool call); 'brief' — only briefings (the Planner). */
+export type Worker = { role: Role; state: 'work' | 'linger' | 'error'; short: string; full: string; jobs: string[]; since: number; note?: 'reply' | 'brief' }
 export type ShownMood = Mood | 'plan'
 
 export type View = {
@@ -165,18 +179,31 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
 
   const workers: Partial<Record<Role, Worker>> = {}
   for (const role of ROLES) {
-    const jobs = o.jobs.filter(j => j.role === role && now - j.startedAt < STALE_MS)
-    const last = o.last[role]
+    const mine = o.jobs.filter(j => j.role === role && now - j.startedAt < STALE_MS)
+    // A briefing is work for BRIEF_MS; then it counts as finished, though its call still runs.
+    const jobs = mine.filter(j => !j.brief || now < briefEnd(j))
+    const briefed = mine.filter(j => j.brief && now >= briefEnd(j)).reduce<Job | null>((a, j) => (a && briefEnd(a) >= briefEnd(j) ? a : j), null)
+    const prev = o.last[role]
+    const last: LastJob | undefined =
+      briefed && (!prev || prev.endedAt < briefEnd(briefed)) ? { short: briefed.short, full: briefed.full, err: false, denied: false, endedAt: briefEnd(briefed) } : prev
     const newest = jobs[jobs.length - 1]
     if (newest) {
       const first = Math.min(...jobs.map(j => j.startedAt))
-      workers[role] = { role, state: 'work', short: jobs.length > 1 ? ascii(newest.short, 10 - (' x' + jobs.length).length) + ' x' + jobs.length : newest.short, full: newest.full, jobs: jobs.map(j => j.full), since: first }
+      // Several at once: "auth.ts x3"; agents briefed together (Claude often starts them in parallel): "agents x3".
+      const many = (s: string) => ascii(s, 10 - (' x' + jobs.length).length) + ' x' + jobs.length
+      const short = jobs.length < 2 ? newest.short : jobs.every(j => j.brief) ? many('agents') : many(newest.short)
+      workers[role] = { role, state: 'work', short, full: newest.full, jobs: jobs.map(j => j.full), since: first }
+      if (jobs.every(j => j.brief)) workers[role]!.note = 'brief'
     } else if (last && (last.err || last.denied) && now - last.endedAt < ERROR_MS) {
       workers[role] = { role, state: 'error', short: last.denied ? 'No!' : 'Failed', full: (last.denied ? '✗ you said no: ' : '✗ failed: ') + last.full, jobs: [], since: last.endedAt }
     } else if (last && now - last.endedAt < LINGER_MS) {
       workers[role] = { role, state: 'linger', short: '', full: '✓ ' + last.full, jobs: [], since: last.endedAt }
     }
   }
+
+  // Claude writes its reply: the Manager dictates, the Typist types it (unless busy with a file).
+  if (mood === 'write' && workers.typist?.state !== 'work')
+    workers.typist = { role: 'typist', state: 'work', short: 'reply', full: 'Typing the reply', jobs: [], since: o.moodAt, note: 'reply' }
 
   const secs = o.secs.filter(s => s.status === 'run' || s.status === 'idle' || (s.endedAt !== null && now - s.endedAt < CHEER_MS))
   const running = o.secs.filter(s => s.status === 'run').length
@@ -235,9 +262,10 @@ const secWhat = (s: Sec): string =>
 /**
  * One line per person, busiest first: the Manager, the workers, the janitor, the
  * secretaries at desks, the line at the door, the to-do list, who is on a break.
- * `seated` is the secretaries at desks in desk order; without it the first four are.
+ * `seated` is the secretaries at desks in desk order; without it the first four are. `lookOf` gives an agent's
+ * look in the picture, so their dot matches their clothes.
  */
-export function lines(v: View, seated?: readonly (string | null)[], breakLine?: { who: string; what: string } | null): Line[] {
+export function lines(v: View, seated?: readonly (string | null)[], breakLine?: { who: string; what: string } | null, lookOf?: (id: string) => number | undefined): Line[] {
   const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone }]
   const order: Record<Worker['state'], number> = { work: 0, error: 1, linger: 2 }
   const ws = ROLES.flatMap(r => (v.workers[r] ? [v.workers[r]!] : [])).sort((a, b) => order[a.state] - order[b.state])
@@ -252,7 +280,7 @@ export function lines(v: View, seated?: readonly (string | null)[], breakLine?: 
   if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '' })
   const atDesk = seated ? v.secs.filter(s => seated.includes(s.id)) : v.secs.slice(0, 4)
   const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : atDesk.indexOf(s))
-  for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b))) out.push({ dot: secDot(s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s) })
+  for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b))) out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s) })
   const waiting = v.secs.length - atDesk.length
   if (waiting > 0) out.push({ dot: DOT.wait, who: 'In line', what: plural(waiting, 'agent waits', 'agents wait') + ' for a free desk', tone: 'warn' })
   if (v.todos && v.todos.length) {

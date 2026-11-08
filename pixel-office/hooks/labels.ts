@@ -8,20 +8,17 @@ export type Who = Role | 'manager'
 
 const ARCHIVE = new Set(['Read', 'Grep', 'Glob', 'LSP', 'NotebookRead'])
 const TYPE = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
-const IT = new Set(['Bash', 'PowerShell', 'BashOutput', 'KillShell', 'KillBash', 'Monitor', 'TaskOutput', 'TaskStop'])
+const IT = new Set(['Bash', 'PowerShell', 'BashOutput', 'KillShell', 'KillBash', 'Monitor', 'TaskOutput', 'TaskStop', 'EnterWorktree', 'ExitWorktree'])
 /** The web: the Researcher at the first front desk. */
 const RESEARCH = new Set(['WebSearch', 'WebFetch'])
-/** The to-do list, tasks and schedules: the Planner. */
-const PLAN = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList'])
+/** The to-do list, tasks, schedules, and briefing a new agent: the Planner. */
+const PLAN = new Set(['Agent', 'Task', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList'])
 /** Looking up skills and tools: the Librarian. */
 const LIBRARY = new Set(['Skill', 'ToolSearch'])
-// Asking, planning and delegating: the Manager does these at the desk.
-const MANAGER = new Set([
-  'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'ListAgents', 'ReadNotifications',
-  'EnterWorktree', 'ExitWorktree', 'Sleep',
-])
+// Asking you and plan mode: the Manager does these at the desk.
+const MANAGER = new Set(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Sleep'])
 
-/** Everything else (MCP, a tool it doesn't know) goes outside: the Courier. */
+/** Everything else goes outside: notes to agents (SendMessage, ListAgents, ReadNotifications), MCP, unknown tools: the Courier. */
 export const whoFor = (tool: string): Who =>
   ARCHIVE.has(tool) ? 'archivist' : TYPE.has(tool) ? 'typist' : IT.has(tool) ? 'it' : RESEARCH.has(tool) ? 'researcher'
     : PLAN.has(tool) ? 'planner' : LIBRARY.has(tool) ? 'librarian' : MANAGER.has(tool) ? 'manager' : 'courier'
@@ -62,7 +59,8 @@ const host = (url: string): string => {
 /** An MCP server's short name: "claude-in-chrome" → "chrome", "claude_ai_Claude_Docs" → "Claude_Docs". */
 const serverName = (server: string): string => server.replace(/^(?:claude[-_]in[-_]|claude[-_]ai[-_]|plugin[-_][^_]+[-_]+)/i, '') || server
 
-export type Label = { who: Who; short: string; full: string }
+/** `brief`: the worker is busy only a moment though the call runs on (briefing a new agent). */
+export type Label = { who: Who; short: string; full: string; brief?: true }
 
 /** Who handles a tool call, a few characters for the bubble, and the whole action for the list. */
 export function describe(tool: string, input: Record<string, unknown>, cwd?: string): Label {
@@ -127,6 +125,25 @@ export function describe(tool: string, input: Record<string, unknown>, cwd?: str
     case 'CronDelete':
     case 'CronList':
       return { who, short: 'schedule', full: tool === 'CronList' ? 'Check the schedule' : tool === 'CronDelete' ? 'Cancel a check-in' : 'Schedule a check-in' }
+    case 'Agent':
+    case 'Task': {
+      const d = oneLine(str(input.description))
+      return { who, short: 'new agent', full: 'Brief a new agent' + (d ? ': ' + d : ''), brief: true }
+    }
+    case 'SendMessage': {
+      const to = oneLine(str(input.to) || str(input.recipient))
+      return { who, short: to && to.length <= 7 ? 'to ' + to : 'note', full: 'Note to ' + (to || 'an agent') }
+    }
+    case 'ListAgents':
+      return { who, short: 'roll call', full: 'Check who is around' }
+    case 'ReadNotifications':
+      return { who, short: 'mail', full: 'Bring in the mail (notifications)' }
+    case 'EnterWorktree': {
+      const n = oneLine(str(input.name) || str(input.branch))
+      return { who, short: 'worktree', full: 'Set up a worktree' + (n ? ': ' + n : '') }
+    }
+    case 'ExitWorktree':
+      return { who, short: 'worktree', full: 'Leave the worktree' }
     case 'Skill': {
       const name = oneLine(str(input.skill))
       return { who, short: basename(name) || 'skill', full: 'Look up skill ' + (name || '?') }
