@@ -4,6 +4,7 @@
 // 1.5 s, changed at most once every 1.5 s. Waking and moods that need you: at once.
 
 import type { ShownMood } from './office'
+import { isStream } from './moods'
 
 /** The look-back for "what the Manager did most". */
 export const CALM_WINDOW = 1500
@@ -12,8 +13,8 @@ export const CALM_HOLD = 1500
 /** Not stepped for this long (the pane was closed): start over from the real mood. */
 const STALE = 1000
 
-const BUSY = new Set<ShownMood>(['think', 'write', 'work'])
-export const isBusy = (m: ShownMood): boolean => BUSY.has(m)
+/** Thinking, writing, tools: the moods that are calmed (the rest show at once). */
+export const isBusy = isStream
 
 export class Calm {
   shown: ShownMood | null = null

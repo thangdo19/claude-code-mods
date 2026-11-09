@@ -3,6 +3,7 @@
 
 import type { Done, Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
 import { fmtDuration, plain } from './labels'
+import { isMeeting, isStream, isUrgent, isWork } from './moods'
 
 export const EMPTY: Office = {
   mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, recent: [], bg: [],
@@ -60,7 +61,7 @@ export const ascii = (s: string, n: number): string => {
 export const DOT = {
   manager: '#d7875f', archivist: '#af87d7', typist: '#d787af', it: '#00afaf', courier: '#ff8700', janitor: '#5f87d7', wait: '#8a8a8a',
   researcher: '#d7af00', planner: '#87af5f', librarian: '#af875f',
-  // The agents' eight looks (LOOK.sec in big-sprites.ts, same order).
+  // The agents' eight looks (LOOK.sec in art/looks.ts, same order).
   sec: ['#ff5f5f', '#5fafff', '#5f5fd7', '#afd700', '#00d7d7', '#a0a8b4', '#d75fd7', '#af005f'],
 } as const
 /** How many looks agents have: up to 8 can be in the office at once (4 desks, 3 in line, 1 walking out). */
@@ -227,8 +228,8 @@ export function realMood(o: Office, now: number): ShownMood {
   let mood: ShownMood = o.mood
   if (mood === 'done' && since > DONE_MS) mood = 'idle'
   if (mood === 'stopped' && since > STOP_MS) mood = 'idle'
-  if (!o.turnActive && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'idle'
-  if (o.plan && (mood === 'think' || mood === 'write' || mood === 'work')) mood = 'plan'
+  if (!o.turnActive && isStream(mood)) mood = 'idle'
+  if (o.plan && isStream(mood)) mood = 'plan'
   return mood
 }
 
@@ -326,8 +327,8 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
       tone = 'bad'
       break
   }
-  // Compacting: everyone stepped out while the Janitor cleans (unless the Manager is needed).
-  if (o.compacting && ['think', 'write', 'work', 'plan', 'idle'].includes(mood)) {
+  // Compacting: everyone stepped out while the Janitor cleans (unless the Manager is needed or just finished).
+  if (o.compacting && !isUrgent(mood)) {
     line = 'Stepped out while the Janitor cleans'
     tone = ''
   }
@@ -353,8 +354,8 @@ const secWhat = (s: Sec): string =>
 export function freeWords(v: View): string {
   if (v.janitor) return 'stepped out'
   if (v.night) return 'gone home'
-  if (v.planning && ['plan', 'permission', 'ask'].includes(v.mood)) return 'at the board'
-  return ['think', 'write', 'work', 'permission', 'ask', 'plan'].includes(v.mood) ? 'at their desks' : 'on a break'
+  if (v.planning && isMeeting(v.mood)) return 'at the board'
+  return isWork(v.mood) ? 'at their desks' : 'on a break'
 }
 
 /**
