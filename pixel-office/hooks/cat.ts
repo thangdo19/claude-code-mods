@@ -36,6 +36,15 @@ export class Cat {
   /** Which way it last walked across (it faces that way). */
   right = false
 
+  /** The office opens (approved round 7): the cat waits by the door, at the water cooler, while everyone comes in. */
+  waitByDoor(tick: number): void {
+    this.dest = 'catCooler'
+    this.route = [[SPOTS.catCooler.x, SPOTS.catCooler.feet]]
+    this.t = 0
+    this.length = 0
+    this.until = tick + 80
+  }
+
   /** Where it is (its feet), and how it looks. */
   at(): Pt {
     const p = pointAt(this.route, this.t)

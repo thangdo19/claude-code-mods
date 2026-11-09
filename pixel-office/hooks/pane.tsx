@@ -53,7 +53,11 @@ export function pane(on: On): void {
     try {
       rt.cwd = e.cwd
       await load($)
-      if (rt.latest.lastActivity === 0) await change($, (o, now) => ({ ...o, lastActivity: now, moodAt: now }))
+      if (rt.latest.lastActivity === 0) {
+        await change($, (o, now) => ({ ...o, lastActivity: now, moodAt: now }))
+        // A new session (approved round 7): the office opens, everyone walks in from the door.
+        rt.sim.opening = true
+      }
       await $.command.register({ name: 'office', description: 'Show the pixel office in the side panel' })
       // No screen (claude -p): nothing to draw, so no timer and no pane.
       if (e.isInteractive === false) return result

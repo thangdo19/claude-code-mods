@@ -61,7 +61,7 @@ export type Tick = {
 
 /** The hour and date the day runs at (`setClock`); by default a June day at 10, so the golden frames never change. */
 export type Clock = { hour?: number; date?: readonly [number, number, number] }
-export type Options = { ticks: number; seed?: number; draw?: boolean; clock?: Clock }
+export type Options = { ticks: number; seed?: number; draw?: boolean; clock?: Clock; /** The day starts as a new session: the office opens. */ opening?: boolean }
 
 /** Runs the day; `each` sees every tick. With `draw: false` only the people move (for the fuzz's rule checks). */
 export function scenario(opt: Options, each: (t: Tick) => void): void {
@@ -72,6 +72,7 @@ export function scenario(opt: Options, each: (t: Tick) => void): void {
   let now = 1_000_000
   let o: Office = { ...EMPTY, lastActivity: now, moodAt: now }
   const sim = new BigSim()
+  sim.opening = !!opt.opening
   const calm = new Calm()
   const cam = new Camera()
   const camSmall = new Camera()

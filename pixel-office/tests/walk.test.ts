@@ -2,7 +2,8 @@ import { expect, test } from 'claude-code/testing'
 
 import { LOOK } from '../hooks/art/looks'
 import { BigSim, routeTo, SPOTS, type SpotId } from '../hooks/walk'
-import { DOT, EMPTY, startTurn, view } from '../hooks/office'
+import { DOT, EMPTY, startJob, startTurn, view } from '../hooks/office'
+import { HOME } from '../hooks/life'
 import { AGENT_DESKS } from '../hooks/world'
 
 import { run, sec } from './helpers'
@@ -40,6 +41,55 @@ test("more agents than desks wait in line; agents take the free desk, then the P
   expect(sim.here('sec:c', 'desk1')).toBe(true)
   expect(['d', 'e', 'f'].map(id => sim.actors.get(`sec:${id}`)?.dest)).toEqual(['wait0', 'wait1', 'wait2'])
   expect(sim.actors.has('sec:b')).toBe(false)
+})
+
+test('a new session opens the office (approved round 7): the Manager walks in first, the staff after, a wave, hi on the TV', async () => {
+  const staff = ['archivist', 'typist', 'it', 'courier', 'planner'] as const
+  const o = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  // Today's start (a reload): everyone in place at once.
+  const reload = new BigSim()
+  reload.sync(view(o, 2))
+  expect(staff.every(r => reload.here(r, HOME[r]))).toBe(true)
+
+  const sim = new BigSim()
+  sim.opening = true
+  sim.sync(view(o, 2))
+  // Nobody in place: the Manager sets off from the door, the staff wait their turn, the cat waits by the door.
+  expect(sim.here('manager')).toBe(false)
+  expect(staff.every(r => sim.actors.get(r)!.delay > 0)).toBe(true)
+  expect(sim.actors.has('researcher') || sim.actors.has('librarian')).toBe(false)
+  expect(sim.cat.dest).toBe('catCooler')
+  let managerIn = -1
+  /** When the Manager and the first of the staff took their first step. */
+  let managerOff = -1
+  let staffOff = -1
+  const waved = new Set<string>()
+  const tv = new Set<string>()
+  for (let t = 0; t < 240; t++) {
+    const v = view(o, 3 + t * 125)
+    sim.sync(v)
+    sim.step(v)
+    if (managerIn < 0 && sim.here('manager', 'chair')) managerIn = sim.tick
+    if (managerOff < 0 && sim.actors.get('manager')!.t > 0) managerOff = sim.tick
+    if (staffOff < 0 && staff.some(r => (sim.actors.get(r)?.t ?? 0) > 0)) staffOff = sim.tick
+    for (const r of staff) if (sim.life.activity(r) === 'hello') waved.add(r)
+    const c = sim.life.caller(sim.tick)
+    if (c) tv.add(c)
+  }
+  expect(managerOff > 0 && managerOff < staffOff && managerIn > 0).toBe(true)
+  expect([...waved].sort()).toEqual([...staff].sort())
+  expect([...tv].sort()).toEqual(['librarian', 'researcher'])
+  expect(sim.life.arriving.size).toBe(0)
+
+  // A job for someone still waiting outside: in at once, hurrying (no wave then).
+  const busy = new BigSim()
+  busy.opening = true
+  busy.sync(view(o, 2))
+  const job = startJob(startTurn(o, 3), { id: 'b', role: 'courier', short: 'git push', full: '$ git push', startedAt: 3 })
+  run(busy, job, 4, 2)
+  expect(busy.actors.get('courier')!.delay).toBe(0)
+  expect(busy.actors.get('courier')!.speed).toBeGreaterThan(2)
+  expect(busy.actors.get('planner')!.delay).toBeGreaterThan(0)
 })
 
 test('no two agents in the office look alike, however many come and go', async () => {

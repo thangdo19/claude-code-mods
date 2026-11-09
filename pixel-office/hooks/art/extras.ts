@@ -1,6 +1,6 @@
 // The art round 6 added (approved round 6): the cat, the printer, the test lamp, the party, employee of the month, the
-// window by the time of day, holiday decorations, hold music, the video-call screen, the board doodles, the parcel,
-// paper planes and the plant corner. Flat, bright, the same palette. Pure drawing; where each goes is in `layout.ts`.
+// window by the time of day, hold music, the video-call screen, the board doodles, the parcel, paper planes and the
+// plant corner. (The holidays are in holidays.ts.) Flat, bright, the same palette. Pure drawing; where each goes is in `layout.ts`.
 
 import type { FB } from '../gfx/fb'
 import { P } from './palette'
@@ -154,50 +154,6 @@ export function skyPane(fb: FB, x: number, y: number, w: number, h: number, sky:
   fb.r(x - 1, y + h, w + 2, 1, '#9aa3ae')
 }
 
-/* ===== decorations ===== */
-
-/** Along the top of the wall: bunting (Halloween), string lights (Christmas), a red string and lanterns (Tết). */
-export function wallDecor(
-  fb: FB, kind: 'halloween' | 'christmas' | 'tet', f: number, skip: (x: number) => boolean, lanterns: readonly { x: number; y: number }[],
-): void {
-  const w = fb.w
-  const wire = kind === 'halloween' ? '#4a3510' : kind === 'christmas' ? '#2f5a3a' : '#c62828'
-  for (let x = 0; x < w; x++) if (!skip(x)) fb.s(x, 0, wire)
-  for (let x = 1; x < w - 1; x += 3) {
-    if (skip(x) || skip(x + 1)) continue
-    const k = Math.floor(x / 3)
-    if (kind === 'halloween') {
-      const c = k % 2 ? '#7b4bb5' : '#f08a24'
-      fb.s(x, 1, c)
-      fb.s(x + 1, 1, c)
-    } else if (kind === 'christmas') {
-      const lit = (k + (f >> 1)) % 3 !== 0
-      fb.s(x, 1, lit ? ['#ff5050', '#ffd84a', '#5fb8ff', '#5ff08a'][k % 4]! : '#3b414d')
-    } else if (k % 2) fb.s(x, 1, '#e8c25a')
-  }
-  if (kind === 'tet')
-    for (const { x: lx, y: ly } of lanterns) {
-      if (skip(lx)) continue
-      art(fb, lx, ly, ['.g.', 'rrr', (f >> 2) % 2 ? 'rRr' : 'rrr', 'rrr', '.g.'], { g: '#e8c25a', r: '#d62828', R: '#ff6b5a' })
-    }
-}
-
-/** The plant on the Manager's desk, dressed for the day: a jack-o'-lantern, a little tree, or peach blossom. */
-export function plantDecor(fb: FB, x: number, y: number, kind: 'halloween' | 'christmas' | 'tet', f: number): void {
-  if (kind === 'halloween') {
-    // A pumpkin by the plant.
-    art(fb, x - 4, y + 3, ['..g..', '.ooo.', 'oyoyo', 'ooooo'], { o: '#f08a24', g: '#2f7d44', y: f % 2 ? '#ffd23f' : '#f2b33d' })
-  } else if (kind === 'christmas') {
-    fb.s(x + 2, y - 1, '#ffd84a')
-    ;[[1, 1], [3, 1], [0, 2], [4, 2], [2, 3]].forEach(([a = 0, b = 0], k) => fb.s(x + a, y + b, (k + f) % 3 ? ['#ff5050', '#ffd84a', '#5fb8ff'][k % 3]! : P.plant))
-  } else {
-    ;[[2, 0], [1, 1], [3, 1], [0, 2], [4, 2], [2, 2]].forEach(([a = 0, b = 0], k) => fb.s(x + a, y + b, k % 2 ? '#ffd6e5' : '#f7a8c4'))
-    // A red envelope hanging on it.
-    fb.r(x + 3, y + 2, 2, 2, '#d62828')
-    fb.s(x + 3, y + 2, '#e8c25a')
-  }
-}
-
 /* ===== hold music ===== */
 
 export function holdNotes(fb: FB, x: number, y: number, f: number): void {
@@ -260,17 +216,27 @@ export function plane(fb: FB, x: number, y: number, right: boolean): void {
 
 /** The plant corner: a tall fern and a round bush in the office's pots, a watering can on the floor (or in use). */
 export function gardenArt(fb: FB, dx: number, f: number, watering: boolean): void {
-  // The tall fern.
+  fern(fb, dx)
+  bush(fb, dx, f, false)
+  if (!watering) wateringCan(fb, dx + 6)
+}
+/** The plant corner's tall fern in its pot (desk 0 from x = dx). */
+export function fern(fb: FB, dx: number): void {
   art(fb, dx, 44, ['..g..', '.gGg.', 'gGgGg', '.gGg.', 'gGgGg', 'GgGgG', '.gGg.', 'gGgGg', '.gGg.', 'gGgGg', '..G..', '..G..'], { g: P.plant, G: P.plant2 })
   fb.r(dx, 56, 5, 5, P.pot)
   fb.r(dx, 56, 5, 1, '#cf7a4a')
   fb.r(dx, 61, 5, 1, P.shadow)
-  // The round bush.
+}
+/** The round bush in its pot: a pink flower, or red bracts as a poinsettia (approved round 7, Christmas). */
+export function bush(fb: FB, dx: number, f: number, poinsettia: boolean): void {
   art(fb, dx + 10, 49, ['..ggg.', '.gGgGg', 'gGgGgG', 'GgGgGg', '.gGgG.', '..gG..'], { g: P.plant, G: P.plant2 })
-  fb.s(dx + 12 + (f >> 3) % 2, 50, '#ff8ad0')
+  if (poinsettia) for (const [a, b] of [[12, 49], [14, 50], [11, 51], [13, 51], [15, 52], [12, 53]] as const) fb.s(dx + a, b, a === 13 ? '#ffd84a' : '#d62828')
+  else fb.s(dx + 12 + (f >> 3) % 2, 50, '#ff8ad0')
   fb.r(dx + 11, 55, 5, 5, P.pot)
   fb.r(dx + 11, 55, 5, 1, '#cf7a4a')
   fb.r(dx + 11, 60, 5, 1, P.shadow)
-  // The watering can, waiting on the floor.
-  if (!watering) art(fb, dx + 6, 59, ['.LL.', 'LLLL', 'LLL.'], { L: '#3fa37a' })
+}
+/** The watering can, waiting on the floor. */
+export function wateringCan(fb: FB, x: number): void {
+  art(fb, x, 59, ['.LL.', 'LLLL', 'LLL.'], { L: '#3fa37a' })
 }

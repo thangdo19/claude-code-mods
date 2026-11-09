@@ -14,10 +14,9 @@ import { P } from './art/palette'
 import { drawPerson, workFx, type Arms, type Face } from './art/people'
 import { ROLES, type Tone, type View } from './office'
 import { agentOf, isRole, secActor, type BigSim } from './walk'
-import { DESK_KIND, DESK_OWNER, holidayAt, remote, skyAt } from './world'
-import {
-  cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, plantDecor, printer, skyPane, starFrame, testLamp, wallDecor,
-} from './art/extras'
+import { decorAt, DESK_KIND, DESK_OWNER, remote, skyAt } from './world'
+import { cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, printer, skyPane, starFrame, testLamp } from './art/extras'
+import { deskDecor, plantCorner, stockings, wallDecor, windowFx, wreath } from './art/holidays'
 import { HOME, managerFree, meeting, SUP, type ActKind, type Icon, type Who } from './life'
 import { isUrgent, isWork } from './moods'
 import {
@@ -34,7 +33,7 @@ const MANAGER_BUBBLE: Record<string, [string, Tone]> = {
 /** How someone on a break holds their arms. */
 const BREAK_ARMS: Record<ActKind, Arms> = {
   sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
-  stretch: 'stretch', report: 'talk', tick: 'point', own: 'type', huddle: 'talk', ship: 'down', eat: 'eat', garden: 'water',
+  stretch: 'stretch', report: 'talk', tick: 'point', own: 'type', huddle: 'talk', ship: 'down', eat: 'eat', garden: 'water', hello: 'raise',
 }
 /** The lightbulb (approved round 6): what the Manager calls out to whoever gets the job. */
 const CALL: Record<Role, string> = { archivist: 'Archivist!', typist: 'Typist!', it: 'IT!', courier: 'Courier!', researcher: 'Research!', planner: 'Planner!', librarian: 'Librarian!' }
@@ -105,11 +104,17 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   still(fb, 'room', room)
   const open = sim.doorOpen()
   still(fb, 'door ' + open, f => door(f, U.door.x, U.door.y, U.door.w, U.door.h, open))
-  // Holiday decorations along the top of the wall (approved round 6), never over the frame, the rack or the window.
-  const holiday = holidayAt(v.now)
+  // Holiday decorations (approved rounds 6 and 7): along the top of the wall, never over the frame, the rack or the
+  // window; a wreath on the closed door; holiday hats on everyone but the Janitor.
+  const deco = decorAt(v.now)
   const fr = U.frame
-  if (holiday)
-    wallDecor(fb, holiday, F, x => (x >= fr.x - 1 && x <= fr.x + fr.w) || (x >= U.rack.x && x < U.rack.x + U.rack.w) || x >= U.window.x - 1, U.lanterns)
+  if (deco.wall)
+    wallDecor(
+      fb, deco.wall, F, x => (x >= fr.x - 1 && x <= fr.x + fr.w) || (x >= U.rack.x && x < U.rack.x + U.rack.w) || x >= U.window.x - 1,
+      [U.board.x, U.board.x + U.board.w - 1], U.lanterns,
+    )
+  if (deco.wreath && !open) wreath(fb, U.wreath.x, U.wreath.y)
+  const hat = deco.hats ?? undefined
   clock(fb, U.clock.x, U.clock.y, F)
   // Employee of the month (approved round 6): whoever had the most jobs since the office opened.
   let star: Role | null = null
@@ -130,6 +135,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   else still(fb, 'board', f => board(f, B.x, B.y, B.w, B.h, false, 0))
   // The window by the time of day (approved round 6); night after 10 idle minutes still wins.
   skyPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, v.night ? 'night' : skyAt(v.now), F)
+  if (deco.window) windowFx(fb, U.window.x, U.window.y, U.window.w, U.window.h, deco.window, F)
   // Thinking at the board (approved round 6, "Many ways to think"): doodles, more the longer the Manager stays.
   if (!meeting(v) && !items.length && v.mood === 'think' && sim.here('manager', 'board')) {
     const m = sim.actors.get('manager')!
@@ -202,7 +208,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const calling = sim.here('manager', 'chair') && (v.mood === 'permission' || v.mood === 'ask' || v.mood === 'hold') && !managerFree(v)
     still(fb, 'boss phone ' + calling, f => deskPhone(f, U.bossPhone.x, U.bossPhone.y, calling))
     holdMusic = calling && v.mood === 'hold'
-    if (holiday) plantDecor(fb, U.plant.x, U.plant.y, holiday, F)
+    if (deco.desk) deskDecor(fb, U.plant.x, U.plant.y, deco.desk, F)
+    if (deco.stockings) stockings(fb, U.stockings.xs, U.stockings.y)
     if (party) cake(fb, U.cake.x, U.cake.y, F)
     const td = U.typistDesk
     still(fb, 'typist desk', f => desk(f, td.x, td.y, td.w, td.h))
@@ -228,17 +235,21 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       const watering = hereAt('garden')
       // (The flower's only change is every 8 frames: `gardenArt` reads `f >> 3`.)
       const bloom = ((F >> 3) % 2) * 8
-      at(DEPTH.plantCorner, () => still(fb, 'plant corner ' + watering + ' ' + bloom, g => gardenArt(g, dx, bloom, watering)))
+      if (deco.tree || deco.poinsettia || deco.floor || deco.eggs) at(DEPTH.plantCorner, () => plantCorner(fb, dx, F, watering, deco))
+      else at(DEPTH.plantCorner, () => still(fb, 'plant corner ' + watering + ' ' + bloom, g => gardenArt(g, dx, bloom, watering)))
       continue
     }
     // The video-call desk (approved round 6); whoever works from home shows on the screen.
     if (kind === 'call') {
       const on = ROLES.filter(r => remote(r) && v.workers[r])
-      const r = on.length ? on[(sim.tick >> 4) % on.length]! : null
-      const w = r ? v.workers[r]! : null
+      // The office opening (approved round 7): with no job on, the two from home say hi, smiling, a heart over the TV.
+      const hi = on.length ? null : life.caller(sim.tick)
+      const r = on.length ? on[(sim.tick >> 4) % on.length]! : hi
+      const w = r && !hi ? v.workers[r]! : null
+      if (hi) callIcons.push([dx + 7, 44, 'heart'])
       at(DEPTH.frontDesks, () => {
         still(fb, 'front desk ' + i, f => desk(f, dx + D.desk.x, D.desk.y, D.desk.w, D.desk.h))
-        callScreen(fb, dx, F, r && w ? g => drawPerson(g, dx + 4, 46, LOOK[r], { maxRow: 6, arms: 'talk', talk: w.state === 'work' ? 'speak' : 'listen', smile: w.state === 'linger', f: F }) : null)
+        callScreen(fb, dx, F, r && (w || hi) ? g => drawPerson(g, dx + 4, 46, LOOK[r], { maxRow: 6, arms: 'talk', talk: !w || w.state === 'work' ? 'speak' : 'listen', smile: !w || w.state === 'linger', f: F }) : null)
         plate(sc, dx + D.sign.x, D.sign.row, r ? SIGN[r] : DESK_SIGN.call)
       })
       if (r && w) {
@@ -314,7 +325,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       const key = seat ? DEPTH.bossSeat : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
       const face = walking ? sim.facing(a) : act ? faceTo('manager', a.dest, px) : 'down'
-      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager') }))
+      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager'), hat }))
       const b = MANAGER_BUBBLE[v.mood]
       if (seat) {
         if (napping) at(DEPTH.top, () => zzz(fb, FURNITURE.zzz.x, FURNITURE.zzz.y, F))
@@ -391,6 +402,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         if (packing) arms = 'down'
         extra = (top2, x2, f2) => parcel(fb, x2, top2, f2, packing, '#e8b58e')
       }
+      // Just in at the office opening (approved round 7): a wave and a smile.
+      if (act === 'hello') smile = true
       if (party && !(w && w.state === 'work') && !walking) {
         arms = 'up'
         smile = true
@@ -413,7 +426,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const face = walking ? sim.facing(a) : isRole(a.id) ? faceTo(a.id, a.dest, px) : 'down'
     const talk = pose === 'talk' && isRole(a.id) ? talkOf(a.id) : undefined
     at(sitting ? spot.feet : py, () => {
-      drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow, face, talk })
+      drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow, face, talk, hat: a.id === 'janitor' ? undefined : hat })
       if (busyNow) workFx(fb, px, top, pf)
       if (extra && face !== 'up') extra(top, px, pf)
     })

@@ -1,6 +1,6 @@
 // Who stands where in the big office and how they get there: along the hallways,
 // never through a desk. Pure; the module keeps one BigSim, which a reload starts
-// over with everyone already in place.
+// over with everyone already in place (a new session: `opening`, everyone walks in).
 
 import type { Role } from '../types'
 import { ROLES, SEC_LOOKS, type View } from './office'
@@ -182,6 +182,11 @@ export class BigSim {
   /** The office cat (approved round 6): not staff, it walks the hallways on its own. */
   readonly cat = new Cat()
   private ready = false
+  /**
+   * The office opens (approved round 7, "Manager opens up"): set before the first sync (a new session), everyone walks
+   * in from the door, the Manager first, instead of being in place already.
+   */
+  opening = false
   private readonly leaving = new Set<string>()
   /** Agent id → their look (index into the agent looks) while in the office: no two look alike. */
   private readonly looks = new Map<string, number>()
@@ -191,7 +196,11 @@ export class BigSim {
     const boss = id === 'manager'
     let a = this.actors.get(id)
     if (a && a.dest === dest && a.leaving === !!o.leaving) {
-      if (o.hurry) a.speed = Math.max(a.speed, hurry(a.length - a.t))
+      if (o.hurry) {
+        a.speed = Math.max(a.speed, hurry(a.length - a.t))
+        // Called to a job while still waiting to come in (the office opening, the morning): in at once.
+        a.delay = 0
+      }
       return a
     }
     const from = a ? this.at(a) : DOOR
@@ -225,8 +234,11 @@ export class BigSim {
 
   /** Brings the office in line with `v`: agents to desks or the line, the janitor; the Life does the staff and the Manager. */
   sync(v: View): void {
-    const instant = !this.ready
+    const first = !this.ready
+    const opening = first && this.opening
+    const instant = first && !opening
     this.ready = true
+    if (opening) this.cat.waitByDoor(this.tick)
     let arriving = 0
     const bring = (id: ActorId, dest: SpotId) => {
       const a = this.actors.get(id)
@@ -299,7 +311,7 @@ export class BigSim {
     for (const a of [...this.actors.values()]) if (among(WAIT_SPOTS, a.dest) && !inLine.has(a.id)) send(a.id)
     if (v.janitor) bring('janitor', 'sweep0')
     else send('janitor')
-    this.life.sync(this, v, instant)
+    this.life.sync(this, v, instant, opening)
   }
 
   /** One tick: the Life decides, everyone takes a step. Esc (frozen): nobody moves. */

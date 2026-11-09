@@ -1,24 +1,28 @@
 // The fuzz: the seeded office day (tests/scenario.ts) for many ticks, checking the rules in CLAUDE.md ("Before saying
 // a change is done") on every tick, and counting what the day covered. Run from pixel-office/ (node only):
 //   npx -y esbuild@0.24.0 tools/fuzz.ts --bundle --platform=node --format=cjs --log-level=error | node - [ticks] [seeds] [--draw]
-// Default: 4 seeds × 10 000 ticks (40 000), each day with its own night and /clear. --draw also draws every frame.
+// Default: 6 seeds × 10 000 ticks (60 000), each day with its own night and /clear. --draw also draws every frame.
 // Prints the broken rules (at most 5 of each) and the coverage; exits 1 on a broken rule.
 
 import { ROLE_NAME, ROLES, DOT_W, WHO_W, fitRows, lines, textWidth } from '../hooks/office'
 import { workTime } from '../hooks/life'
-import { holidayAt, REMOTE, skyAt } from '../hooks/world'
+import { decorAt, REMOTE, skyAt } from '../hooks/world'
 import { scenario, type Clock } from '../tests/scenario'
 
 const args = process.argv.slice(2)
 const nums = args.filter(a => /^\d+$/.test(a)).map(Number)
 const TICKS = nums[0] ?? 10_000
-const SEEDS = nums[1] ?? 4
+const SEEDS = nums[1] ?? 6
 const DRAW = args.includes('--draw')
 
 const BREAK_SPOTS = new Set(['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist', 'garden'])
-/** Each seed's day at its own time (round 6): lunch at Christmas, sunset at Halloween, morning at Tết, a plain day. */
+/**
+ * Each seed's day at its own time (rounds 6 and 7): lunch on Christmas Eve (Santa hats), sunset at Halloween, morning
+ * at Tết, a plain day, the evening of July 4th, Thanksgiving. Odd seeds start as a new session (the office opens).
+ */
 const CLOCKS: Clock[] = [
-  { hour: 12, date: [2026, 12, 10] }, { hour: 18, date: [2026, 10, 25] }, { hour: 7, date: [2027, 2, 6] }, { hour: 10, date: [2026, 6, 1] },
+  { hour: 12, date: [2026, 12, 24] }, { hour: 18, date: [2026, 10, 25] }, { hour: 7, date: [2027, 2, 6] }, { hour: 10, date: [2026, 6, 1] },
+  { hour: 19, date: [2027, 7, 4] }, { hour: 11, date: [2026, 11, 25] },
 ]
 /** The Manager thinking this many ticks before a huddle (`HUDDLE_AFTER` in life.ts). */
 const HUDDLE_AFTER = 64
@@ -53,7 +57,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   let huddleAt = -1
   const huddling = new Set<string>()
   let catWalking = -1
-  scenario({ ticks: TICKS, seed, draw: DRAW, clock: CLOCKS[(seed - 1) % CLOCKS.length] }, t => {
+  scenario({ ticks: TICKS, seed, draw: DRAW, clock: CLOCKS[(seed - 1) % CLOCKS.length], opening: seed % 2 === 1 }, t => {
     const { v, sim, i } = t
     const at = (m: string) => fail(m.split(':')[0]!, 'seed ' + seed + ' tick ' + i + ': ' + m)
     const life = sim.life
@@ -83,8 +87,14 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     if (md === 'board') saw('manager at the board')
     for (const s of v.secs) saw('agent ' + s.status + (s.teammate ? ' (teammate)' : ''))
     saw('sky ' + (v.night ? 'night (idle)' : skyAt(v.now)))
-    const hol = holidayAt(v.now)
-    if (hol) saw('holiday ' + hol)
+    const deco = decorAt(v.now)
+    if (deco.holiday) saw('holiday ' + deco.holiday + (deco.hats ? ' + hats' : '') + (deco.tree ? ' + tree' : ''))
+    if (i < 200 && life.arriving.size) saw('opening: coming in')
+    if (life.activity('it') === 'hello' || life.activity('archivist') === 'hello') saw('opening: wave')
+    if (life.caller(sim.tick)) saw('opening: hi on the TV')
+    // The opening: the Manager comes in first; nobody is on the way in for long.
+    if (i === 1 && seed % 2 === 1 && inside.some(a => a.id !== 'manager' && a.arrivedAt >= 0)) at('opening: someone in place at once')
+    if (i > 400 && life.arriving.size) at('opening: still coming in after 400 ticks: ' + [...life.arriving].join(', '))
     saw('cat ' + sim.cat.pose() + (sim.cat.desk() >= 0 ? ' on desk ' + sim.cat.desk() : ''))
     if (v.mood === 'think' && (/^pace/.test(md) || md === 'coffee' || md === 'board')) saw('manager thinks at ' + md)
     if (life.calling(sim.tick)) saw('manager calls out')

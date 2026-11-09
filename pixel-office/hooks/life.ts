@@ -10,11 +10,11 @@ import type { ActorId, BigSim } from './walk'
 import { among, PATROL_SPOTS, REPORT_SPOTS, SUP_SPOTS, type SpotId } from './layout'
 import { isMeeting, isUrgent, isWork } from './moods'
 import { LINGER_MS, MIN_SHOW, ROLE_NAME, ROLES, type View } from './office'
-import { lunchAt, remote } from './world'
+import { lunchAt, remote, REMOTE } from './world'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
 export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check' | 'bulb'
-export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'stretch' | 'report' | 'tick' | 'own' | 'huddle' | 'ship' | 'eat' | 'garden'
+export type ActKind = 'sip' | 'phone' | 'mug' | 'game' | 'coffee' | 'chat' | 'plant' | 'visit' | 'host' | 'stretch' | 'report' | 'tick' | 'own' | 'huddle' | 'ship' | 'eat' | 'garden' | 'hello'
 /** Someone with a life: a role, or 'manager'. */
 export type { Who }
 type Act = { kind: ActKind; spot: SpotId; until: number; partner?: Who }
@@ -64,7 +64,7 @@ const DOING: Record<ActKind, string> = {
   sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
   plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting', stretch: 'stretching',
   report: 'reporting to the Manager', tick: 'ticking the board', own: 'at work', huddle: 'talking it over with the Manager',
-  ship: 'taking a parcel to the door', eat: 'having lunch', garden: 'watering the plants',
+  ship: 'taking a parcel to the door', eat: 'having lunch', garden: 'watering the plants', hello: 'saying good morning',
 }
 /** Spots too close together for two people at once (a report spot and the visit / look-over spot below it). */
 const NEAR: Partial<Record<SpotId, SpotId[]>> = {
@@ -85,6 +85,15 @@ const PACE = 2
 /** At most this many set off for a break thing at once; the next keeps at it up to HOLD_MAX ticks (2 s) more. */
 const SETTING_OFF = 2
 const HOLD_MAX = 16
+/**
+ * The office opening (approved round 7, "Manager opens up"): the staff set off this many ticks after the Manager, one
+ * every OPEN_GAP; each waves HELLO_TICKS at the desk; when all are in, the two from home say hi on the TV, TV_HELLO
+ * ticks each.
+ */
+const OPEN_LEAD = 14
+const OPEN_GAP = 6
+const HELLO_TICKS = 20
+const TV_HELLO = 20
 /** Ticks between two ticks on the board, and how long the check shows after the last one. */
 const TICK_EVERY = 6
 const TICK_SHOW = 14
@@ -170,9 +179,15 @@ export class Life {
   private poseIdx = 0
   private poseEnd = -1
   private poseSpell = -1
+  /** The office opening: who is still on the way in, and when the two from home say hi on the TV (tick). */
+  readonly arriving = new Set<Role>()
+  private helloAt = -1
 
-  /** Who is in the office: staff come for the workday, go home at night; the Manager is always in. */
-  sync(sim: BigSim, v: View, instant: boolean): void {
+  /**
+   * Who is in the office: staff come for the workday, go home at night; the Manager is always in. `opening`: the
+   * first sync of a new session, everyone walks in from the door, the Manager first.
+   */
+  sync(sim: BigSim, v: View, instant: boolean, opening = false): void {
     const out = cleaning(v)
     const m = sim.actors.get('manager')
     if (out) {
@@ -184,7 +199,7 @@ export class Life {
       }
       this.managerOut = true
     } else if (!m) {
-      sim.goTo('manager', meeting(v) ? 'board' : 'chair', this.managerOut && !instant ? {} : { instant: true })
+      sim.goTo('manager', meeting(v) ? 'board' : 'chair', opening || (this.managerOut && !instant) ? {} : { instant: true })
       this.managerOut = false
     } else if (m.leaving) {
       // Done before the Manager was out of the door: back in.
@@ -200,7 +215,8 @@ export class Life {
       if (inside && (!a || a.leaving)) {
         this.endAct(r)
         const home = sim.borrowed(r) ? spare(sim, r) : HOME[r]
-        sim.goTo(r, home, instant ? { instant: true } : job ? { hurry: true } : { delay: 6 * k++ })
+        sim.goTo(r, home, instant ? { instant: true } : job ? { hurry: true } : { delay: opening ? OPEN_LEAD + OPEN_GAP * k++ : 6 * k++ })
+        if (opening) this.arriving.add(r)
       } else if (!inside && a && !a.leaving) {
         this.endAct(r)
         if (instant) sim.remove(r)
@@ -210,6 +226,7 @@ export class Life {
   }
 
   step(sim: BigSim, v: View): void {
+    this.greet(sim, v)
     this.board(sim, v)
     this.notice(sim, v)
     this.manager(sim, v)
@@ -299,16 +316,35 @@ export class Life {
     }
   }
 
+  /**
+   * The office opening: each one waves at the desk on getting there (not with a job, nor once Claude works); when all
+   * are in, the two from home say hi on the TV.
+   */
+  private greet(sim: BigSim, v: View): void {
+    for (const r of [...this.arriving]) {
+      const a = sim.actors.get(r)
+      if (a && !a.leaving && a.arrivedAt < 0) continue
+      this.arriving.delete(r)
+      if (a && !a.leaving && a.dest === HOME[r] && !workTime(v) && !v.workers[r]) this.acts.set(r, { kind: 'hello', spot: a.dest, until: sim.tick + HELLO_TICKS })
+      if (!this.arriving.size && !cleaning(v) && !v.night) this.helloAt = sim.tick + 8
+    }
+  }
+  /** Who says hi on the TV now (the office opening), if anyone. */
+  caller(tick: number): Role | null {
+    if (this.helloAt < 0 || tick < this.helloAt || tick >= this.helloAt + TV_HELLO * REMOTE.length) return null
+    return REMOTE[Math.floor((tick - this.helloAt) / TV_HELLO)] ?? null
+  }
+
   /** What `r` (no job now) is doing, for their own line in the list. */
   doing(sim: BigSim, v: View, r: Role): string {
     const a = sim.actors.get(r)
-    if (!a && remote(r)) return v.night ? 'gone home' : 'working from home'
+    if (!a && remote(r)) return v.night ? 'gone home' : this.caller(sim.tick) === r ? 'saying hi on the call' : 'working from home'
     if (!a) return cleaning(v) ? 'stepped out while the Janitor cleans' : v.night ? 'gone home' : 'on the way in'
     if (a.leaving) return cleaning(v) ? 'stepping out' : 'going home'
     if (meeting(v)) return 'at the board'
     const lent = sim.borrowed(r) ? ' · an agent has the desk' : ''
     const act = this.acts.get(r)
-    if (!act) return (sim.here(r) ? 'at the desk' : 'back to the desk') + lent
+    if (!act) return (this.arriving.has(r) ? 'coming in' : sim.here(r) ? 'at the desk' : 'back to the desk') + lent
     const mate = act.partner ? 'the ' + NAME(act.partner) : ''
     const what =
       act.kind === 'chat' ? 'chatting with ' + mate
@@ -482,7 +518,8 @@ export class Life {
       return
     }
     const free1 = (spot: SpotId) => !taken(sim, spot, r)
-    const idle = free.filter(p => p !== r && (!this.acts.get(p) || AT_HOME.has(this.acts.get(p)!.kind)))
+    // (Not anyone still coming in at the office opening: they get to their desk first.)
+    const idle = free.filter(p => p !== r && !(p !== 'manager' && this.arriving.has(p)) && (!this.acts.get(p) || AT_HOME.has(this.acts.get(p)!.kind)))
     const hosts = idle.filter(p => VISIT[p] && sim.here(p, HOME[p]) && !crowded(sim, VISIT[p]!, r))
     const options: [number, () => void][] = []
     if (homeOk) {

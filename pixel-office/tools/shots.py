@@ -4,6 +4,7 @@
 #   <scratch>/venv/bin/python pixel-office/tools/shots.py COLS ROWS fullscreen|classic OUT_PREFIX FOLDER
 # FOLDER: a scratch folder with a notes.txt (the session runs there). Each run is a short real haiku turn (it costs a little).
 # OLD_DIR=<a copy of pixel-office> loads that copy instead (to compare with the code before a change).
+# OPENING=1 also shoots the office opening (a new session), 1, 3, 6 and 10 s after the picture first shows.
 # The folder-trust prompt defaults to "No, exit": the script picks "Yes" (down, Enter).
 import os, pty, sys, time, select, fcntl, termios, struct, json
 import pyte
@@ -68,12 +69,19 @@ def shot(name):
                 if c.data.strip(): d.text((X, Y + 2), c.data, fill=fg, font=font)
     img.save(f'{out}-{name}.png')
     open(f'{out}-{name}.txt', 'w').write(text())
-pump(8)
-for _ in range(3):
-    t = text().lower()
-    if 'trust this folder' in t:
-        send('\x1b[B'); pump(0.5); send('\r'); pump(5)
-pump(2)
+# The first seconds: the trust prompt, and (OPENING=1) the office opening, shot 1, 3, 6 and 10 s after the picture shows.
+opening = bool(os.environ.get('OPENING'))
+start, seen, taken = time.time(), None, set()
+while time.time() - start < 25:
+    pump(0.25)
+    if 'trust this folder' in text().lower():
+        send('\x1b[B'); pump(0.5); send('\r'); continue
+    if seen is None and any('▀' in row for row in screen.display): seen = time.time()
+    if not opening and time.time() - start >= 10: break
+    if opening and seen is not None:
+        for s in (1, 3, 6, 10):
+            if time.time() - seen >= s and s not in taken: taken.add(s); shot(f'0-open{s}s')
+        if len(taken) == 4: break
 send('/office'); pump(0.6); send('\r'); pump(4)
 shot('1-idle')
 send('Read the file notes.txt and, in the same reply and at the same time, run the bash command: sleep 8 && echo hi'); pump(0.5); send('\r')
