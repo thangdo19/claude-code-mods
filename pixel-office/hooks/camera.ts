@@ -2,45 +2,50 @@
 // smaller than it (at most 64 × 32 pixels = 64 columns × 16 rows) that glides to
 // where things happen. Pure.
 
-import { BIG_COLS } from './big-scene'
-import { Scene } from './big-sprites'
+import { Scene } from './gfx/fb'
+import { BIG_COLS, CAMERA, OFFICE_H, type SpotId } from './layout'
+import { isMeeting, isUrgent } from './moods'
 import type { View } from './office'
-import type { BigSim } from './big-walk'
+import type { Actor, BigSim } from './walk'
 
-/** The full office's height in pixels. */
-const OFFICE_H = 62
 /** The window's tallest: 16 terminal rows. */
 export const CAM_ROWS = 16
 export const CAM_COLS = BIG_COLS
 
-/** Where the window's top sits for each part of the office (even: whole terminal rows). */
-const BACK = 0 // the back wall: door, cabinets, rack, board
-const MIDDLE = 14 // the Manager's row, with the Courier and the Typist
-const FRONT = 30 // the agents' desks
+const { back: BACK, middle: MIDDLE, front: FRONT, center: CENTER } = CAMERA
 
 /** How long the camera looks at each break spot on its tour, ms. */
 const TOUR_MS = 20_000
 
+/** The break spots the camera tours between turns. */
+const TOUR: readonly SpotId[] = ['chatA', 'chatC', 'coffee', 'plant', 'visitCourier', 'visitTypist']
+/** The first one in the office who `is` (no copy of everyone). */
+const someone = (sim: BigSim, is: (a: Actor) => boolean): Actor | undefined => {
+  for (const a of sim.actors.values()) if (is(a)) return a
+  return undefined
+}
+
 /** The part of the office (top row) where pixel row `feet` is. */
-const partOf = (feet: number) => (feet <= 30 ? BACK : feet <= 44 ? MIDDLE : FRONT)
+const partOf = (feet: number) => (feet <= CAMERA.backTo ? BACK : feet <= CAMERA.middleTo ? MIDDLE : FRONT)
 
 /** Where to look: the top row and the column to center, in pixels. */
 export function focusOf(v: View, sim?: BigSim): { top: number; center: number } {
   const busy = (r: 'archivist' | 'it') => v.workers[r]?.state === 'work'
   // Plan mode: the meeting at the board, its dialogs too.
-  if (v.planning && ['plan', 'permission', 'ask'].includes(v.mood)) return { top: BACK, center: 38 }
+  if (v.planning && isMeeting(v.mood)) return { top: BACK, center: CENTER.board }
   // The Manager needs you or just finished: look at the Manager.
-  if (['permission', 'ask', 'done', 'stopped', 'hold'].includes(v.mood)) return { top: MIDDLE, center: 32 }
+  if (isUrgent(v.mood)) return { top: MIDDLE, center: CENTER.boss }
   // Compacting: follow the Janitor's round (everyone else stepped out).
   const j = v.janitor ? sim?.actors.get('janitor') : undefined
   if (sim && j) {
     const [x, y] = sim.at(j)
     return { top: partOf(y), center: x + 3 }
   }
-  if (v.secs.some(s => s.status === 'run') || (['researcher', 'planner', 'librarian'] as const).some(r => v.workers[r]?.state === 'work')) return { top: FRONT, center: 32 }
-  if (busy('archivist') || busy('it')) return { top: BACK, center: busy('archivist') && !busy('it') ? 22 : busy('it') && !busy('archivist') ? 46 : 34 }
+  if (v.secs.some(s => s.status === 'run') || (['researcher', 'planner', 'librarian'] as const).some(r => v.workers[r]?.state === 'work')) return { top: FRONT, center: CENTER.frontDesks }
+  if (busy('archivist') || busy('it'))
+    return { top: BACK, center: busy('archivist') && !busy('it') ? CENTER.files : busy('it') && !busy('archivist') ? CENTER.rack : CENTER.filesAndRack }
   // Plan mode: the Manager walks to the board.
-  if (v.mood === 'plan') return { top: BACK, center: 38 }
+  if (v.mood === 'plan') return { top: BACK, center: CENTER.board }
   const m = sim?.actors.get('manager')
   if (sim && m && m.dest !== 'chair') {
     const [x, y] = sim.at(m)
@@ -48,28 +53,31 @@ export function focusOf(v: View, sim?: BigSim): { top: number; center: number } 
   }
   // Between turns: now and then a look at whoever is chatting or making coffee, then back to the Manager.
   if (sim && v.mood === 'idle' && !v.night) {
-    const spots = ['chatA', 'chatC', 'coffee', 'plant', 'visitCourier', 'visitTypist'].filter(d => [...sim.actors.values()].some(a => a.dest === d && a.arrivedAt >= 0))
+    const spots = TOUR.filter(d => someone(sim, a => a.dest === d && a.arrivedAt >= 0))
     const k = Math.floor(v.now / TOUR_MS) % (spots.length + 1)
     const d = spots[k - 1]
     if (d) {
-      const a = [...sim.actors.values()].find(x => x.dest === d)!
+      const a = someone(sim, x => x.dest === d)!
       const [x, y] = sim.at(a)
-      return { top: partOf(y), center: d === 'chatA' ? 13 : d === 'chatC' ? 39 : x + 3 }
+      return { top: partOf(y), center: d === 'chatA' ? CENTER.cooler : d === 'chatC' ? CENTER.boardChat : x + 3 }
     }
   }
-  return { top: MIDDLE, center: 32 }
+  return { top: MIDDLE, center: CENTER.boss }
 }
 
 export class Camera {
-  top = MIDDLE
+  top: number = MIDDLE
   left = 0
   private ready = false
+  /** Where the last step was headed (the focus is worked out once a step). */
+  private goal: { top: number; left: number } = { top: MIDDLE, left: 0 }
 
   /** One step toward what `v` shows in a window `w` × `h` pixels: a row (2 pixels) and a column at a time. */
   step(v: View, w: number, h: number, sim?: BigSim): void {
     const f = focusOf(v, sim)
     const top = Math.max(0, Math.min(OFFICE_H - h, f.top)) & ~1
     const left = Math.max(0, Math.min(BIG_COLS - w, f.center - Math.floor(w / 2)))
+    this.goal = { top, left }
     if (!this.ready) {
       // The first look (a new pane, a reload) is already in place.
       this.ready = true
@@ -81,12 +89,9 @@ export class Camera {
     this.left += Math.sign(left - this.left) * Math.min(1, Math.abs(left - this.left))
   }
 
-  /** Still gliding toward its spot. */
-  moving(v: View, w: number, h: number, sim?: BigSim): boolean {
-    const f = focusOf(v, sim)
-    const top = Math.max(0, Math.min(OFFICE_H - h, f.top)) & ~1
-    const left = Math.max(0, Math.min(BIG_COLS - w, f.center - Math.floor(w / 2)))
-    return this.ready && (top !== this.top || left !== this.left)
+  /** Still gliding toward where the last step was headed. */
+  moving(): boolean {
+    return this.ready && (this.goal.top !== this.top || this.goal.left !== this.left)
   }
 
   /** The part of the full office in the window: its pixels and the words of its bubbles. */
