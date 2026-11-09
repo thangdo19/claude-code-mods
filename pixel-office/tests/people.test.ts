@@ -33,8 +33,24 @@ test('walking: a new step on every frame drawn, facing the way they go, the side
   expect(cols(right, 3 + 2, 3 + 4)).toBeLessThanOrEqual(5)
   // Talking at rest they may turn; anything else at rest faces you.
   expect(px({ arms: 'mug', face: 'right' })).toBe(px({ arms: 'mug' }))
-  // The ponytail hangs still while she sits at work; it swings as she walks.
-  const head = (o: PersonOpts) => Array.from(pic(o, LOOK.it).p.slice(0, 20 * (3 + 5))).join()
-  expect(head({ arms: 'type', seat: true, f: 0 })).toBe(head({ arms: 'type', seat: true, f: 1 }))
-  expect(head({ arms: 'walk', f: 0 })).not.toBe(head({ arms: 'walk', f: 2 }))
+  // Round 7's two new looks keep the bulk from the side too.
+  for (const L of [LOOK.it, LOOK.archivist]) {
+    const side = pic({ arms: 'down', face: 'right' }, L)
+    expect(cols(side, 3 + 6, 3 + 8)).toBeGreaterThanOrEqual(4)
+  }
+})
+
+test('holiday hats (approved round 7) are drawn, and the drawing cache keeps them apart from no hat', () => {
+  const px = (o: PersonOpts, L = LOOK.typist) => {
+    const fb = new FB(20, 18)
+    drawPerson(fb, 6, 4, L, o)
+    return Array.from(fb.p).join()
+  }
+  // Without the hat in the cache key, the hat drawn after the plain one would come back plain.
+  const plain = px({ f: 5 })
+  const santa = px({ f: 5, hat: 'santa' })
+  const party = px({ f: 5, hat: 'party' })
+  expect(new Set([plain, santa, party]).size).toBe(3)
+  expect(px({ f: 5 })).toBe(plain)
+  expect(px({ f: 5, hat: 'santa', face: 'right', arms: 'walk' })).not.toBe(px({ f: 5, face: 'right', arms: 'walk' }))
 })

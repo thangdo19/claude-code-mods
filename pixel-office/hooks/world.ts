@@ -1,4 +1,4 @@
-// What the office knows about the world outside it (approved round 6): who works from home, what each front desk is
+// What the office knows about the world outside it (approved rounds 6 and 7): who works from home, what each front desk is
 // for, the time of day (the window, lunch) and the date (holidays). Pure. Tests and the picks page pin the clock with
 // `setClock`, so the same office draws the same frames anywhere.
 
@@ -32,19 +32,151 @@ export function skyAt(now: number): 'morning' | 'day' | 'sunset' | 'night' {
 /** Breaks around noon are lunch. */
 export const lunchAt = (now: number): boolean => hourAt(now) === 12
 
+/* ===== holidays (approved round 7: every US holiday plus Tết; Christmas builds up from November) ===== */
+
+/** The holidays the office dresses up for (Columbus / Indigenous Peoples' Day was left out, round 7). */
+export type Holiday =
+  | 'newyear' | 'mlk' | 'presidents' | 'valentine' | 'tet' | 'stpatrick' | 'easter' | 'memorial' | 'juneteenth' | 'july4' | 'labor'
+  | 'halloween' | 'veterans' | 'thanksgiving' | 'christmas'
+export type Wall = 'halloween' | 'tet' | 'garland' | 'tinsel' | 'hearts' | 'shamrock' | 'eggs' | 'usa' | 'leaves'
+export type DeskDecor = 'pumpkin' | 'xmas' | 'tet' | 'flag' | 'juneteenth' | 'rose' | 'clover' | 'confetti' | 'leaf'
+/** On the floor of the plant corner (the Manager's desk has no room beside the hotline). */
+export type Floor = 'turkey' | 'basket' | 'gold'
+/** What the office is dressed in on a date. */
+export type Decor = {
+  /** The holiday on, if any (the Christmas season counts from Nov 1). */
+  holiday: Holiday | null
+  /** Along the top of the wall. */
+  wall: Wall | null
+  /** By the plant on the Manager's desk. */
+  desk: DeskDecor | null
+  window: 'snow' | 'fireworks' | 'rainbow' | null
+  /** The fir in the plant corner, in place of the fern: 0 none, 1 bare, 2 with lights, 3 with ornaments and a star. */
+  tree: 0 | 1 | 2 | 3
+  /** Gifts under the tree (0–4). */
+  gifts: number
+  /** A wreath on the door, stockings on the Manager's desk, the bush as a poinsettia. */
+  wreath: boolean
+  stockings: boolean
+  poinsettia: boolean
+  /** On everyone but the Janitor. */
+  hats: 'santa' | 'party' | null
+  /** Easter: a bunny behind the bush and eggs by the pots. */
+  eggs: boolean
+  floor: Floor | null
+}
+
+const NO_DECOR: Decor = {
+  holiday: null, wall: null, desk: null, window: null, tree: 0, gifts: 0, wreath: false, stockings: false, poinsettia: false, hats: null, eggs: false, floor: null,
+}
+
 /** Lunar New Year (Tết), its first day [month, day], by year. */
-const TET: Record<number, readonly [number, number]> = { 2026: [2, 17], 2027: [2, 6], 2028: [1, 26], 2029: [2, 13], 2030: [2, 3] }
-/** The decorations for the date at `now`: Halloween (Oct 20–31), Christmas (December), Tết (a week each side), or none. */
-export function holidayAt(now: number): 'halloween' | 'christmas' | 'tet' | null {
-  const d = new Date(now)
-  const [y, m, day] = pinned.date ?? [d.getFullYear(), d.getMonth() + 1, d.getDate()]
-  if (m === 10 && day >= 20) return 'halloween'
-  if (m === 12) return 'christmas'
+const TET: Record<number, readonly [number, number]> = {
+  2026: [2, 17], 2027: [2, 6], 2028: [1, 26], 2029: [2, 13], 2030: [2, 3], 2031: [1, 23], 2032: [2, 11], 2033: [1, 31], 2034: [2, 19], 2035: [2, 8],
+}
+/** A date as a day number (days since 1970), so ranges cross months and years. */
+const dayNo = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 86_400_000
+const weekday = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+/** The day of month `m` that is its `n`th weekday `wd` (0 Sunday). */
+export const nthWeekday = (y: number, m: number, wd: number, n: number): number => 1 + ((wd - weekday(y, m, 1) + 7) % 7) + (n - 1) * 7
+/** The day of month `m` that is its last weekday `wd`. */
+export const lastWeekday = (y: number, m: number, wd: number): number => {
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  return last - ((weekday(y, m, last) - wd + 7) % 7)
+}
+/** Easter Sunday [month, day] (the Gregorian computus). */
+export function easter(y: number): [number, number] {
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25)
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4
+  const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451)
+  return [Math.floor((h + l - 7 * m + 114) / 31), ((h + l - 7 * m + 114) % 31) + 1]
+}
+/** Thanksgiving: the fourth Thursday of November. */
+export const thanksgiving = (y: number): number => nthWeekday(y, 11, 4, 4)
+
+/**
+ * Year `y`'s holidays as [holiday, first day, last day], the most important first: on its days it wins the wall, the
+ * desk and the window. Monday holidays show the long weekend (Saturday to Monday).
+ */
+function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, number][] {
+  const out: [Exclude<Holiday, 'christmas'>, number, number][] = []
+  const on = (h: Exclude<Holiday, 'christmas'>, m: number, d: number, before = 0, after = 0) => out.push([h, dayNo(y, m, d) - before, dayNo(y, m, d) + after])
+  on('newyear', 12, 31, 0, 1)
+  on('newyear', 1, 1)
   const t = TET[y]
-  if (t) {
-    const at = (mm: number, dd: number) => Date.UTC(y, mm - 1, dd) / 86_400_000
-    const diff = at(m, day) - at(t[0], t[1])
-    if (diff >= -7 && diff <= 7) return 'tet'
+  if (t) on('tet', t[0], t[1], 7, 7)
+  on('valentine', 2, 14, 4)
+  on('thanksgiving', 11, thanksgiving(y), 3, 1)
+  on('july4', 7, 4, 3)
+  on('memorial', 5, lastWeekday(y, 5, 1), 2)
+  on('presidents', 2, nthWeekday(y, 2, 1, 3), 2)
+  on('labor', 9, nthWeekday(y, 9, 1, 1), 2)
+  on('mlk', 1, nthWeekday(y, 1, 1, 3), 2)
+  on('juneteenth', 6, 19)
+  on('veterans', 11, 11)
+  on('stpatrick', 3, 17, 3)
+  const [em, ed] = easter(y)
+  on('easter', em, ed, 6)
+  on('halloween', 10, 31, 11)
+  return out
+}
+const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'desk' | 'window' | 'floor'>> = {
+  newyear: { wall: 'tinsel', desk: 'confetti', window: 'fireworks', floor: null },
+  mlk: { wall: null, desk: 'flag', window: null, floor: null },
+  presidents: { wall: 'usa', desk: 'flag', window: null, floor: null },
+  valentine: { wall: 'hearts', desk: 'rose', window: null, floor: null },
+  tet: { wall: 'tet', desk: 'tet', window: null, floor: null },
+  stpatrick: { wall: 'shamrock', desk: 'clover', window: 'rainbow', floor: 'gold' },
+  easter: { wall: 'eggs', desk: null, window: null, floor: 'basket' },
+  memorial: { wall: 'usa', desk: 'flag', window: null, floor: null },
+  juneteenth: { wall: null, desk: 'juneteenth', window: null, floor: null },
+  july4: { wall: 'usa', desk: 'flag', window: 'fireworks', floor: null },
+  labor: { wall: 'usa', desk: 'flag', window: null, floor: null },
+  halloween: { wall: 'halloween', desk: 'pumpkin', window: null, floor: null },
+  veterans: { wall: null, desk: 'flag', window: null, floor: null },
+  thanksgiving: { wall: 'leaves', desk: 'leaf', window: null, floor: 'turkey' },
+}
+
+/**
+ * The decorations for the date at `now`. Christmas (approved round 7, "Builds up"), from Nov 1 to Jan 1: the fir
+ * comes Nov 1, its lights Nov 8, a garland on the wall Nov 15, after Thanksgiving ornaments and a star, a wreath,
+ * stockings, a poinsettia; in December snow in the window and a gift more every 6 days; Dec 24–25 every gift and Santa
+ * hats; after that the tree stays up to New Year. A holiday on its days wins the wall, the desk and the window; the
+ * tree stays.
+ */
+export function decorAt(now: number): Decor {
+  const d0 = new Date(now)
+  const [y, m, d] = pinned.date ?? [d0.getFullYear(), d0.getMonth() + 1, d0.getDate()]
+  const t = dayNo(y, m, d)
+  const out: Decor = { ...NO_DECOR }
+  const sy = m >= 11 ? y : y - 1
+  if (t >= dayNo(sy, 11, 1) && t <= dayNo(sy + 1, 1, 1)) {
+    const dec1 = dayNo(sy, 12, 1)
+    const eve = dayNo(sy, 12, 24)
+    const stage =
+      t < dec1 ? (t < dayNo(sy, 11, 8) ? 1 : t < dayNo(sy, 11, 15) ? 2 : t <= dayNo(sy, 11, thanksgiving(sy)) ? 3 : 4)
+      : t < eve ? 5 : t <= eve + 1 ? 6 : 7
+    out.holiday = 'christmas'
+    out.tree = stage === 1 ? 1 : stage <= 3 ? 2 : 3
+    if (stage >= 3) out.wall = 'garland'
+    if (stage >= 4) Object.assign(out, { wreath: true, stockings: true, desk: 'xmas', poinsettia: true })
+    if (stage >= 5) out.window = 'snow'
+    if (stage === 5) out.gifts = Math.min(4, 1 + Math.floor((t - dec1) / 6))
+    if (stage === 6) Object.assign(out, { gifts: 4, hats: 'santa' })
   }
-  return null
+  const today = holidaysOf(y).find(([, a, b]) => t >= a && t <= b)
+  if (today) {
+    const [h] = today
+    const dd = DAY_DECOR[h]
+    out.holiday = h
+    if (dd.wall) out.wall = dd.wall
+    if (dd.desk) out.desk = dd.desk
+    if (dd.window) out.window = dd.window
+    out.floor = dd.floor
+    // July 4th's fireworks: on the 4th all day, the evenings before.
+    if (h === 'july4' && d !== 4 && hourAt(now) >= 6 && hourAt(now) < 17) out.window = null
+    if (h === 'newyear') out.hats = 'party'
+    if (h === 'easter') out.eggs = true
+  }
+  return out
 }

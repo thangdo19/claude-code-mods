@@ -19,6 +19,8 @@ export type Face = 'down' | 'up' | 'left' | 'right'
 export type PersonOpts = {
   f?: number; seat?: boolean; maxRow?: number; arms?: Arms; eyes?: 'closed'; smile?: boolean; seed?: number; busy?: boolean
   face?: Face; talk?: 'speak' | 'listen'
+  /** A holiday hat (approved round 7): Santa's on Christmas Eve and Day, a party hat at New Year. */
+  hat?: 'santa' | 'party'
 }
 
 /** Seen from behind: hair instead of a face, no tie or open collar. */
@@ -68,10 +70,11 @@ const ARMS: readonly (Arms | undefined)[] = [
   'talk', 'read', 'tidy', 'stretch', 'walkBroom', 'eat',
 ]
 const FACES: readonly Face[] = ['down', 'up', 'left', 'right']
+const HATS: readonly PersonOpts['hat'][] = [undefined, 'santa', 'party']
 /**
  * Drawn people by everything their pixels depend on (approved art, drawn once): the look, the frame mod 48 (every
  * other use of the frame is mod 2, 3, 4, 8, 16 or a bit of it), whether the eyes are closed (a blink), the talker's
- * mouth and hand, the listener's nod, and the options (the seed only moves the blink, the hand and the nod). Each pixel: (x + GX) + (y + GY) * GW, its char code << 11.
+ * mouth and hand, the listener's nod, the hat, and the options (the seed only moves the blink, the hand and the nod). Each pixel: (x + GX) + (y + GY) * GW, its char code << 11.
  */
 const drawn = new Map<number, Uint32Array>()
 /** The cache starts over past this many (a long session). */
@@ -111,6 +114,7 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
     key = key * 2 + (o.busy ? 1 : 0)
     key = key * ARMS.length + ARMS.indexOf(arms)
     key = key * FACES.length + FACES.indexOf(face)
+    key = key * HATS.length + HATS.indexOf(o.hat)
     key = key * 1e6 + info.id
     px = drawn.get(key)
   }
@@ -173,24 +177,21 @@ function person(
     del(hx, 8)
     put(hx, 7, 's')
   }
-  // The ponytail swings with her steps and hangs still at rest (approved round 5; it flipped 4 times a second).
-  const sw = walking ? (f >> 1) % 2 : 0
-
   if (side) {
-    sideLook(L, sw, closed, speaking && f % 2 === 1, put)
+    sideLook(L, closed, speaking && f % 2 === 1, put)
     sideMoves(f, step, walking, arms, gesture, !!o.seat, put, del)
   } else {
     if (!L.tie && face === 'down') {
       put(3, 6, 'c')
       put(3, 7, 'c')
     }
-    if (face === 'up') backLook(L, sw, put)
-    else frontLook(L, sw, put)
+    if (face === 'up') backLook(L, put)
+    else frontLook(L, put)
     if (closed && face === 'down') {
       put(2, 3, 'S')
       put(4, 3, 'S')
     }
-    if (o.smile && face === 'down') {
+    if ((o.smile || L.smiley) && face === 'down') {
       put(2, 4, 'm')
       put(4, 4, 'm')
     }
@@ -401,7 +402,7 @@ function person(
         break
     }
   }
-  if (L.skirt && !o.seat) skirt(step, side, put, del)
+  if (o.hat) hat(o.hat, side, put)
   let g = grid
   if (nod) {
     // The head (rows 0–4, hair and all) a pixel down for a moment.
@@ -426,12 +427,28 @@ function person(
 }
 
 /** Hair, glasses, headset and the rest, seen from the front. */
-function frontLook(L: Look, sw: number, put: Put): void {
-  if (L.style === 'pony') {
-    // A fuller crown, side-swept bangs, the hair down to the ears (the ponytail comes after the headset).
+function frontLook(L: Look, put: Put): void {
+  if (L.style === 'straight') {
+    // Approved round 7 (the user's photo): a full crown, wispy bangs with the forehead between, long straight hair down
+    // the sides and over the shoulders to the chest (so it never reads as short hair, as round 4's did).
     for (let i = 1; i <= 5; i++) put(i, 0, 'h')
-    for (let i = 0; i <= 6; i++) put(i, 1, i === 2 ? 'H' : 'h')
-    for (const [a, b] of [[2, 2], [3, 2], [0, 2], [6, 2]] as const) put(a, b, 'h')
+    for (let i = 0; i <= 6; i++) put(i, 1, i === 4 ? 'H' : 'h')
+    put(2, 2, 'h')
+    put(4, 2, 'h')
+    for (let r = 2; r <= 5; r++) {
+      put(0, r, 'h')
+      put(6, r, 'h')
+    }
+    for (let r = 5; r <= 7; r++) {
+      put(1, r, r === 7 ? 'H' : 'h')
+      put(5, r, r === 7 ? 'H' : 'h')
+    }
+  } else if (L.style === 'bob') {
+    // Approved round 7: a shoulder-length bob, side-swept bangs, curling in on the shoulders.
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let i = 0; i <= 6; i++) put(i, 1, i === 4 ? 'H' : 'h')
+    for (const i of [0, 2, 3, 6]) put(i, 2, 'h')
+    for (const [a, b] of [[0, 3], [6, 3], [0, 4], [6, 4], [0, 5], [1, 5], [5, 5], [6, 5]] as const) put(a, b, 'h')
   } else if (L.style === 'long') for (const [a, b] of [[1, 3], [5, 3], [1, 4], [5, 4], [0, 4], [6, 4], [0, 5], [6, 5]] as const) put(a, b, 'h')
   else if (L.style === 'bun') {
     put(2, -1, 'h')
@@ -459,17 +476,20 @@ function frontLook(L: Look, sw: number, put: Put): void {
     for (let i = 1; i <= 5; i++) put(i, -1, 'g')
     for (const [a, b] of [[0, 2], [0, 3], [6, 2], [6, 3]] as const) put(a, b, 'g')
   }
-  // The ponytail behind the head, tied high with the band.
-  if (L.style === 'pony') for (const [a, b, ch] of [[6, 0, 'i'], [7, 0, 'h'], [7, 1, 'h'], [7 + sw, 2, 'H'], [7 + sw, 3, 'h'], [7 + sw, 4, 'h']] as const) put(a, b, ch)
   if (L.badge) put(5, 6, 'w')
   if (L.bag) for (const [a, b] of [[1, 5], [2, 6], [3, 7]] as const) put(a, b, 'B')
 }
 
-/** Seen from behind: long hair down the back, the ponytail down the middle, the headset band, the bag strap. */
-function backLook(L: Look, sw: number, put: Put): void {
-  if (L.style === 'pony') {
-    put(3, 0, 'i')
-    for (const [a, b, ch] of [[3, 1, 'H'], [3, 2, 'H'], [3 + sw, 3, 'h'], [3 + sw, 4, 'h'], [3 + sw, 5, 'h']] as const) put(a, b, ch)
+/** Seen from behind: long hair down the back, the bob, the headset band, the bag strap. */
+function backLook(L: Look, put: Put): void {
+  if (L.style === 'straight') {
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let r = 1; r <= 4; r++) for (let i = 0; i <= 6; i++) put(i, r, i === 2 && r <= 3 ? 'H' : 'h')
+    for (let r = 5; r <= 7; r++) for (let i = 1; i <= 5; i++) put(i, r, r === 7 && (i === 1 || i === 5) ? 'H' : 'h')
+  } else if (L.style === 'bob') {
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let r = 1; r <= 4; r++) for (let i = 0; i <= 6; i++) put(i, r, i === 2 && r <= 2 ? 'H' : 'h')
+    for (let i = 1; i <= 5; i++) put(i, 5, 'h')
   } else if (L.style === 'long') for (const [a, b] of [[1, 4], [2, 4], [3, 4], [4, 4], [5, 4], [1, 5], [2, 5], [3, 5], [4, 5], [5, 5], [2, 6], [3, 6], [4, 6]] as const) put(a, b, 'h')
   else if (L.style === 'bun') {
     put(2, -1, 'h')
@@ -490,19 +510,22 @@ function backLook(L: Look, sw: number, put: Put): void {
 }
 
 /** Seen from the side (facing right): hair at the back and bangs, glasses, headset, tie, badge, bag, the mouth. */
-function sideLook(L: Look, sw: number, closed: boolean, mouthOpen: boolean, put: Put): void {
+function sideLook(L: Look, closed: boolean, mouthOpen: boolean, put: Put): void {
   if (L.style === 'long') for (const [a, b] of [[1, 4], [2, 4], [1, 5], [2, 5], [1, 6]] as const) put(a, b, 'h')
   else if (L.style === 'bun') for (const [a, b, ch] of [[2, -1, 'h'], [3, -1, 'H'], [1, -1, 'h'], [2, -2, 'h']] as const) put(a, b, ch)
   else if (L.style === 'cap') {
     for (let i = 2; i <= 4; i++) put(i, 0, 'q')
     for (let i = 1; i <= 6; i++) put(i, 1, 'q')
-  } else if (L.style === 'pony') {
-    for (let i = 1; i <= 5; i++) {
-      put(i, 0, 'h')
-      put(i, 1, 'h')
-    }
-    put(4, 1, 'H')
-    put(5, 2, 'h')
+  } else if (L.style === 'straight') {
+    // Bangs at the front, the long hair down the back.
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let i = 0; i <= 5; i++) put(i, 1, i === 3 ? 'H' : 'h')
+    for (const [a, b] of [[4, 2], [5, 2], [0, 2], [0, 3], [0, 4], [1, 4], [1, 5], [1, 6]] as const) put(a, b, 'h')
+    put(1, 7, 'H')
+  } else if (L.style === 'bob') {
+    for (let i = 1; i <= 5; i++) put(i, 0, 'h')
+    for (let i = 0; i <= 5; i++) put(i, 1, i === 3 ? 'H' : 'h')
+    for (const [a, b] of [[0, 2], [4, 2], [5, 2], [0, 3], [0, 4], [1, 4], [0, 5], [1, 5]] as const) put(a, b, 'h')
   }
   if (L.glasses) {
     put(4, 3, 'G')
@@ -515,8 +538,6 @@ function sideLook(L: Look, sw: number, closed: boolean, mouthOpen: boolean, put:
     put(2, 3, L.silver ? 'J' : 'g')
     if (L.silver) put(3, 4, 'J')
   }
-  // The ponytail behind the head, tied high with the band; it swings with the steps.
-  if (L.style === 'pony') for (const [a, b, ch] of [[0, 0, 'i'], [-1, 0, 'h'], [-1, 1, 'H'], [-1 - sw, 2, 'h'], [-1 - sw, 3, 'h'], [-1 - sw, 4, 'h']] as const) put(a, b, ch)
   if (L.tie) {
     put(5, 6, 'T')
     put(5, 7, 'T')
@@ -555,28 +576,20 @@ function sideMoves(f: number, step: number, walking: boolean, arms: Arms | undef
   }
 }
 
-/** A skirt flaring out over the legs (rows 9–12); walking, the legs step under it. `step`: 1 or 3 when not stepping. */
-function skirt(step: number, side: boolean, put: Put, del: Del): void {
-  for (let yy = 9; yy <= 12; yy++) for (let xx = -1; xx <= 7; xx++) del(xx, yy)
-  if (side) {
-    for (let xx = 2; xx <= 5; xx++) put(xx, 9, xx === 5 ? 'P' : 'p')
-    for (let xx = 1; xx <= 6; xx++) put(xx, 10, xx % 2 ? 'P' : 'p')
-    const legs = step % 2 ? [[3, 11], [4, 11]] : [[2, 11], [5, 11]]
-    for (const [a, b] of legs) put(a!, b!, 'l')
-    for (const [a, b] of step % 2 ? [[3, 12], [4, 12], [5, 12]] : [[1, 12], [2, 12], [5, 12], [6, 12]]) put(a!, b!, 'f')
+/**
+ * A holiday hat over everything on the head (approved round 7). Santa's: a white brim, the red cone flopping back to a
+ * white pom. A party hat: a striped cone with a pom.
+ */
+function hat(kind: 'santa' | 'party', side: boolean, put: Put): void {
+  if (kind === 'party') {
+    for (const [a, b, ch] of [[2, -1, 'x'], [3, -1, 'z'], [4, -1, 'x'], [3, -2, 'x'], [3, -3, 'u']] as const) put(a, b, ch)
     return
   }
-  for (let xx = 1; xx <= 5; xx++) put(xx, 9, xx >= 4 ? 'P' : 'p')
-  for (let xx = 0; xx <= 6; xx++) put(xx, 10, xx % 2 ? 'P' : 'p')
-  for (const xx of [2, 4]) put(xx, 11, 'l')
-  for (const xx of [1, 2, 4, 5]) put(xx, 12, 'f')
-  // A step: the foot swinging forward lifts.
-  if (step % 2 === 0) {
-    for (const xx of step === 0 ? [4, 5] : [1, 2]) {
-      del(xx, 12)
-      put(xx, 11, 'f')
-    }
-  }
+  for (let i = 1; i <= 5; i++) put(i, 0, 'w')
+  const cone = side
+    ? ([[2, -1, 'u'], [3, -1, 'u'], [4, -1, 'U'], [1, -2, 'u'], [2, -2, 'u'], [3, -2, 'U'], [0, -2, 'w'], [0, -1, 'w']] as const)
+    : ([[2, -1, 'u'], [3, -1, 'u'], [4, -1, 'u'], [5, -1, 'U'], [3, -2, 'u'], [4, -2, 'u'], [5, -2, 'U'], [6, -2, 'w'], [6, -1, 'w']] as const)
+  for (const [a, b, ch] of cone) put(a, b, ch)
 }
 
 /** On a job: two bits of paper fly up from the hands of the person drawn at (x, y). `f`: every tick. */
