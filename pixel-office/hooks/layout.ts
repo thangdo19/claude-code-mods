@@ -44,8 +44,6 @@ export const FURNITURE = {
   deskPhone: { x: 12, y: 36 },
   bossChair: { x: 26, y: 26 },
   bossDesk: { x: 23, y: 39, w: 20, h: 6 },
-  /** The gold name strip on the Manager's desk. */
-  bossPlate: { x: 30, y: 41, w: 5, h: 1 },
   bossMonitor: { x: 24, y: 33 },
   /** The Manager's red hotline to the CEO (approved round 6), where the papers were; hold music rises from `holdNotes`. */
   bossPhone: { x: 36, y: 36 },
@@ -73,6 +71,10 @@ export const FRONT_DESK = {
   frame: { x: 0, y: 45, w: 15, h: 17 },
   /** The cat sitting on a free desk by the monitor: its left and its feet. */
   cat: { x: 3, y: 54 },
+  /** The name tag on the desk top (approved round 8): its middle, on text row 27; at most 9 letters, clear of the monitor. */
+  nameplate: { x: 5, row: 27, most: 9 },
+  /** The caller's name at the bottom left of the TV (approved round 8), as a video call shows it. */
+  tvName: { x: 3, row: 26 },
 } as const
 
 /** Brass signs over the stations: the middle of the word and its text row. */
@@ -81,6 +83,20 @@ export const SIGN_AT = {
   it: { x: 54, row: 1 },
   courier: { x: 8, row: 21 },
   typist: { x: 56, row: 21 },
+  /** The Manager's desk sign (approved round 8: MANAGER, where a gold strip was). */
+  manager: { x: 32, row: 21 },
+} as const
+
+/**
+ * Name tags (approved round 8), the middle of each name and its text row: a black nameplate on the desk top in front
+ * of whoever sits there (Mary-Beth's left of the typewriter); over the wall sign for Susan and Lauren, who have no desk.
+ */
+export const NAME_AT = {
+  archivist: { x: 18, row: 2 },
+  it: { x: 54, row: 0 },
+  courier: { x: 8, row: 19 },
+  typist: { x: 53, row: 19 },
+  manager: { x: 32, row: 19 },
 } as const
 
 /** At the Manager's desk: the thought bubble's top-left, and where the word bubble's tail points (x, text row). */

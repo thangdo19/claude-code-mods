@@ -6,7 +6,7 @@ import type { Look } from './looks'
 
 const SPR = ['..hhh..', '.hHhhh.', '.hsssh.', '.seseS.', '..sms..', '.ckTkc.', 'cccTccC', 'cccTccC', 's.ccC.s', '..ppP..', '..p.P..', '..p.P..', '.ff.ff.']
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'deskPhone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom' | 'eat'
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'deskPhone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom' | 'eat' | 'laptop' | 'walkLaptop' | 'laptopShut'
 /**
  * Which way someone faces (approved round 5, "Face the way they walk"): the front ('down', at rest and walking down),
  * the back ('up', walking up an aisle), or a side (walking, or standing turned to whoever they talk to).
@@ -67,7 +67,7 @@ const lookInfo = (L: Look) => {
 let nextLook = 0
 const ARMS: readonly (Arms | undefined)[] = [
   undefined, 'down', 'type', 'up', 'chin', 'raise', 'phone', 'deskPhone', 'mug', 'folder', 'magnify', 'point', 'broom', 'sleep', 'walk', 'walkMug', 'water',
-  'talk', 'read', 'tidy', 'stretch', 'walkBroom', 'eat',
+  'talk', 'read', 'tidy', 'stretch', 'walkBroom', 'eat', 'laptop', 'walkLaptop', 'laptopShut',
 ]
 const FACES: readonly Face[] = ['down', 'up', 'left', 'right']
 const HATS: readonly PersonOpts['hat'][] = [undefined, 'santa', 'party']
@@ -87,7 +87,7 @@ export function drawPerson(fb: FB, x: number, y: number, L: Look, o: PersonOpts 
   const f = o.f ?? 0
   const seed = o.seed ?? 0
   const arms = o.arms
-  const walking = arms === 'walk' || arms === 'walkMug' || arms === 'walkBroom'
+  const walking = arms === 'walk' || arms === 'walkMug' || arms === 'walkBroom' || arms === 'walkLaptop'
   // The back only while walking; a side while walking, or standing to talk.
   let face: Face = o.face ?? 'down'
   if (o.seat || (face === 'up' && !walking) || (face !== 'down' && !walking && arms !== 'talk' && arms !== 'down')) face = 'down'
@@ -180,6 +180,10 @@ function person(
   if (side) {
     sideLook(L, closed, speaking && f % 2 === 1, put)
     sideMoves(f, step, walking, arms, gesture, !!o.seat, put, del)
+    // The laptop shut, under the near arm (approved round 8).
+    // (Row 8 back to the shirt: the swinging hand is now the one holding it.)
+    if (arms === 'walkLaptop')
+      for (const [a, b, ch] of [[3, 6, 'C'], [1, 7, 'j'], [2, 7, 'j'], [3, 7, 'j'], [4, 7, 'j'], [5, 7, 'J'], [2, 8, 'c'], [3, 8, 'c'], [4, 8, 'c'], [5, 8, 's']] as const) put(a, b, ch)
   } else {
     if (!L.tie && face === 'down') {
       put(3, 6, 'c')
@@ -387,6 +391,30 @@ function person(
           put(6, 5, 'C')
           put(7, 4, 's')
         }
+        break
+      case 'laptop': {
+        // The IT girl's laptop (approved round 8, "Held at the waist"): open on her arm, the lid toward us with a heart
+        // sticker, the screen's light over its top edge; her right hand types.
+        for (const [a, b] of [[0, 8], [6, 8], [0, 7], [6, 7]] as const) del(a, b)
+        for (let xx = 1; xx <= 5; xx++) {
+          put(xx, 6, 'j')
+          put(xx, 7, xx === 5 ? 'J' : 'j')
+          put(xx, 8, 'g')
+        }
+        put(2, 7, 'i')
+        put(0, 8, 's')
+        if (o.busy ? f % 2 : (f >> 2) % 2) put(6, 7, 's')
+        else put(6, 8, 's')
+        put(2 + (f % 3), 5, 'n')
+        break
+      }
+      case 'walkLaptop':
+      case 'laptopShut':
+        // Approved round 8: the laptop shut, under her arm, walking or standing to report.
+        for (const [a, b] of [[7, 5], [7, 6], [7, 7], [7, 8]] as const) put(a, b, 'j')
+        put(8, 6, 'J')
+        put(8, 7, 'J')
+        if (walking) steps(true)
         break
       case 'walk':
       case 'walkMug':

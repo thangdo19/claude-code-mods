@@ -32,12 +32,12 @@ test('the pane shows what a running call does, on every surface', async ($, on) 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect((await ui.find({ type: 'Text', text: /Read src\/auth\.ts/ }))?.text).toBe('Read src/auth.ts')
-    expect((await ui.find({ type: 'Text', text: /Archivist/ }))?.text).toContain('Archivist')
+    expect((await ui.find({ type: 'Text', text: /Susan/ }))?.text).toContain('Susan · files')
     await ui.unmount()
   }
   // Above the prompt in the classic renderer: the half-size office, the list beside it.
   const inline = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement: 'inline', bodyColumns: 165, scroll: { offset: 0, bodyRows: 16 } } })
-  expect((await inline.find({ type: 'Text', text: /Archivist/ }))?.text).toContain('Archivist')
+  expect((await inline.find({ type: 'Text', text: /Susan/ }))?.text).toContain('Susan · files')
   // The camera: the full office at its own size through a 64 x 16 window, still a Raster.
   const raster = (await inline.find({ type: 'Raster' })) as { props: { columns: number; rows: number } } | undefined
   expect([raster?.props.columns, raster?.props.rows]).toEqual([CAM_COLS, CAM_ROWS])

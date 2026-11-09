@@ -9,7 +9,7 @@ import type { Who } from './labels'
 import type { ActorId, BigSim } from './walk'
 import { among, PATROL_SPOTS, REPORT_SPOTS, SUP_SPOTS, type SpotId } from './layout'
 import { isMeeting, isUrgent, isWork } from './moods'
-import { LINGER_MS, MIN_SHOW, ROLE_NAME, ROLES, type View } from './office'
+import { LINGER_MS, MIN_SHOW, NAME, ROLES, type View } from './office'
 import { lunchAt, remote, REMOTE } from './world'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
@@ -63,7 +63,7 @@ const HUDDLE_ORDER: readonly Role[] = ['planner', 'archivist', 'it', 'typist', '
 const DOING: Record<ActKind, string> = {
   sip: 'having a coffee', mug: 'having a coffee', phone: 'on the phone', game: 'playing a game', coffee: 'making coffee',
   plant: 'watering the plant', chat: 'chatting', visit: 'visiting', host: 'chatting', stretch: 'stretching',
-  report: 'reporting to the Manager', tick: 'ticking the board', own: 'at work', huddle: 'talking it over with the Manager',
+  report: 'reporting to ' + NAME.manager, tick: 'ticking the board', own: 'at work', huddle: 'talking it over with ' + NAME.manager,
   ship: 'taking a parcel to the door', eat: 'having lunch', garden: 'watering the plants', hello: 'saying good morning',
 }
 /** Spots too close together for two people at once (a report spot and the visit / look-over spot below it). */
@@ -78,7 +78,11 @@ const REPORT_TICKS = 12
 const SPARE: readonly SpotId[] = ['meet4', 'meet5', 'meet2', 'meet3', 'meet6']
 const CHAT_ICONS: Icon[] = ['dots', 'ha', 'heart', 'note']
 const MEET_ICONS: Icon[] = ['ask', 'bang', 'dots']
-const NAME = (w: Who) => (w === 'manager' ? 'Manager' : ROLE_NAME[w])
+/**
+ * Commands the IT girl takes her laptop for (approved round 8, "server commands"): remote machines, containers,
+ * downloads, installs and deploys.
+ */
+export const LAPTOP_CMDS = /\b(ssh|scp|rsync|curl|wget|docker|kubectl|helm|terraform|deploy|brew|apt(-get)?|pip3? install|npm (i|install|ci)|pnpm (i|install|add)|yarn( add| install)?)\b/
 
 /** Calm (approved Nov 2026: "people move too much"): every break or desk thing lasts this many times longer. */
 const PACE = 2
@@ -182,6 +186,12 @@ export class Life {
   /** The office opening: who is still on the way in, and when the two from home say hi on the TV (tick). */
   readonly arriving = new Set<Role>()
   private helloAt = -1
+  /**
+   * The IT girl's laptop (approved round 8): 'open' at the rack for a server command, in half of her own work, or while
+   * a background command runs; 'shut' under her arm on the way to report it and back. `lapOut`: she had it out last.
+   */
+  lap: 'open' | 'shut' | null = null
+  private lapOut = false
 
   /**
    * Who is in the office: staff come for the workday, go home at night; the Manager is always in. `opening`: the
@@ -287,6 +297,8 @@ export class Life {
       this.thinkClock = 0
       this.think = want > this.think ? this.think + 1 : this.think === 3 ? 1 : 0
     }
+    // (Last, once this tick's breaks and reports are set.)
+    this.laptop(sim, v)
   }
 
   /**
@@ -335,6 +347,34 @@ export class Life {
     return REMOTE[Math.floor((tick - this.helloAt) / TV_HELLO)] ?? null
   }
 
+  /** The IT girl's laptop, this tick (see `lap`). */
+  private laptop(sim: BigSim, v: View): void {
+    const a = sim.actors.get('it')
+    const w = v.workers.it
+    const act = this.acts.get('it')
+    if (!a || a.leaving) {
+      this.lapOut = false
+      this.lap = null
+      return
+    }
+    const atRack = sim.here('it', HOME.it)
+    let open = false
+    if (atRack) {
+      if (w?.state === 'work') open = LAPTOP_CMDS.test(w.full)
+      // Just done: still on it until she goes to report.
+      else if (w?.state === 'linger' && !act) open = this.lapOut
+      else if (act?.kind === 'own') open = (act.until >> 4) % 2 === 1 || v.bg.length > 0
+      else if (!act && !w) open = v.bg.length > 0
+      if (open) this.lapOut = true
+      else if (w?.state === 'work' || act?.kind === 'own') this.lapOut = false
+    }
+    // Off on a break, she leaves it at the rack.
+    if (act && act.kind !== 'report' && act.kind !== 'own') this.lapOut = false
+    const reporting = act?.kind === 'report' && among(REPORT_SPOTS, act.spot)
+    const goingBack = !act && !atRack && a.dest === HOME.it
+    this.lap = open ? 'open' : this.lapOut && (reporting || goingBack) ? 'shut' : null
+  }
+
   /** What `r` (no job now) is doing, for their own line in the list. */
   doing(sim: BigSim, v: View, r: Role): string {
     const a = sim.actors.get(r)
@@ -345,13 +385,13 @@ export class Life {
     const lent = sim.borrowed(r) ? ' · an agent has the desk' : ''
     const act = this.acts.get(r)
     if (!act) return (this.arriving.has(r) ? 'coming in' : sim.here(r) ? 'at the desk' : 'back to the desk') + lent
-    const mate = act.partner ? 'the ' + NAME(act.partner) : ''
+    const mate = act.partner ? NAME[act.partner] : ''
     const what =
       act.kind === 'chat' ? 'chatting with ' + mate
       : act.kind === 'visit' ? 'visiting ' + mate
       : act.kind === 'host' ? mate + ' came by'
       : act.kind === 'own' ? OWN_WORK[r]
-      : act.kind === 'report' && !among(REPORT_SPOTS, act.spot) ? 'calling the Manager'
+      : act.kind === 'report' && !among(REPORT_SPOTS, act.spot) ? 'calling ' + NAME.manager
       : DOING[act.kind]
     return what + lent
   }

@@ -4,7 +4,7 @@ import { renderBig } from '../hooks/scene'
 import { BigSim } from '../hooks/walk'
 import { REPORT_AFTER } from '../hooks/life'
 import { BOSS_BUBBLE } from '../hooks/layout'
-import { EMPTY, endJob, fitRows, lines, MIN_SHOW, NIGHT_MS, ROLE_NAME, ROLES, setMood, startJob, startTurn, view } from '../hooks/office'
+import { EMPTY, endJob, fitRows, lines, MIN_SHOW, NIGHT_MS, ROLES, setMood, startJob, startTurn, view, WHO } from '../hooks/office'
 import { remote } from '../hooks/world'
 
 import { run, sec, todoTurn } from './helpers'
@@ -23,8 +23,8 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
   // Everyone has their own line in the list, saying what they do on their break.
   const v = view(day, 50_000)
   const ls = lines(v, sim.seated(), r => sim.doing(v, r))
-  for (const r of ROLES) expect(ls.filter(l => l.who === ROLE_NAME[r]).map(l => l.tone)).toEqual(['idle'])
-  expect(ls.find(l => l.who === 'Researcher')?.what).toBe('working from home')
+  for (const r of ROLES) expect(ls.filter(l => l.who === WHO[r]).map(l => l.tone)).toEqual(['idle'])
+  expect(ls.find(l => l.who === 'Leo · web')?.what).toBe('working from home')
   // A job: the Archivist goes to the cabinets; the Researcher takes theirs on the video call, still at home.
   let busy = startJob(startTurn(day, 50_000), { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 50_000 })
   busy = startJob(busy, { id: 'w', role: 'researcher', short: 'oauth', full: 'Web search: oauth', startedAt: 50_000 })
@@ -32,7 +32,7 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
   expect(sim.here('archivist', 'archivist')).toBe(true)
   expect(sim.actors.has('researcher')).toBe(false)
   const bv = view(busy, 55_000)
-  expect(lines(bv, sim.seated(), r => sim.doing(bv, r)).find(l => l.who === 'Researcher')?.what).toBe('Web search: oauth (on a call)')
+  expect(lines(bv, sim.seated(), r => sim.doing(bv, r)).find(l => l.who === 'Leo · web')?.what).toBe('Web search: oauth (on a call)')
   // Night: everyone walks out of the door; the Manager stays.
   const night = { ...day, lastActivity: 1, moodAt: 1 }
   run(sim, night, NIGHT_MS + 10, 200)
@@ -109,7 +109,7 @@ test('a job right after thinking: a lightbulb, then the Manager calls out who ge
   run(sim, job, 3_925, 6)
   expect(sim.life.calling(sim.tick)).toBe('archivist')
   const sc = renderBig(view(job, 4_700), sim, 1, 2)
-  expect(sc.texts.filter(t => t.row === BOSS_BUBBLE.words.row).map(t => t.ch).join('')).toContain('Archivist!')
+  expect(sc.texts.filter(t => t.row === BOSS_BUBBLE.words.row).map(t => t.ch).join('')).toContain('Susan!')
   run(sim, job, 4_700, 40)
   expect(sim.life.calling(sim.tick)).toBe(null)
   // Long after the thinking: no lightbulb.
@@ -138,6 +138,24 @@ test('git push: the Courier packs a parcel, walks it to the door, comes back and
   }
   expect(reports).toBe(1)
   expect(sim.here('courier', 'courier')).toBe(true)
+})
+
+test('the IT girl opens her laptop for a server command, not for the tests, and carries it shut to report', async () => {
+  const sim = new BigSim()
+  const o = setMood(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'work', 1)
+  const tests = startJob(o, { id: 't', role: 'it', short: 'npm test', full: '$ npm test', startedAt: 1_000 })
+  run(sim, tests, 1_000, 16)
+  expect(sim.life.lap).toBe(null)
+  const ssh = startJob(o, { id: 's', role: 'it', short: 'ssh box', full: '$ ssh box uptime', startedAt: 4_000 })
+  run(sim, ssh, 4_000, 16)
+  expect(sim.life.lap).toBe('open')
+  const done = endJob(ssh, 's', 'it', { short: 'ssh box', full: '$ ssh box uptime', err: false, denied: false, endedAt: 6_000 })
+  const seen = new Set<string>()
+  for (let t = 6_000; t < 20_000; t += 125) {
+    run(sim, done, t, 1)
+    if (sim.life.activity('it') === 'report') seen.add(String(sim.life.lap))
+  }
+  expect([...seen]).toEqual(['shut'])
 })
 
 test('Claude writing the reply: the Manager dictates, the Typist types it, then reports it once', async () => {
@@ -206,7 +224,7 @@ test('plan mode: the Manager calls everyone free to the board', async () => {
   const ls = lines(v, sim.seated(), r => sim.doing(v, r))
   expect(ls.filter(l => l.free).map(l => l.what)).toEqual(ROLES.map(r => (remote(r) ? 'working from home' : 'at the board')))
   // Short of rows, they share one line.
-  expect(fitRows(ls, 40, 3).map(l => l.who + ': ' + l.what)).toEqual(['Manager: Planning (plan mode)', 'Staff: all at the board'])
+  expect(fitRows(ls, 40, 3).map(l => l.who + ': ' + l.what)).toEqual(['Claude · boss: Planning (plan mode)', 'Staff: all at the board'])
 })
 
 test('between turns the Manager is on a break; at night the Manager naps at the desk', async () => {
