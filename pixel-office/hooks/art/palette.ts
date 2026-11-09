@@ -10,7 +10,7 @@ export const P = {
   rack: '#2d323c', rack2: '#3b414d', cab: '#8a96a5', cab2: '#76828f', cabHi: '#a6b1be', handle: '#d7dde4',
   door: '#8c5d3b', door2: '#7a5032', doorFrame: '#5f4029', doorHi: '#a06c46', knob: '#e6c35c',
   plant: '#3f9b56', plant2: '#2f7d44', pot: '#b8653a', chair: '#5a3a2c', chair2: '#6b4535', chairS: '#383c46', chairS2: '#474c58',
-  gold: '#e8c25a', spot: '#ffd84a',
+  spot: '#ffd84a',
 } as const
 /** The Courier's red desk phone (approved round 4, "Red phone"); its handset is also in everyone's palette ('R'). */
 export const PHONE = { body: '#b83232', hand: '#e86060', key: '#f4e1c1', cord: '#7a2222' } as const

@@ -39,9 +39,15 @@ export const MAX_LAG = 6_000
 const MAX_RECENT = 30
 
 export const ROLES: readonly Role[] = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian']
-export const ROLE_NAME: Record<Role, string> = {
-  archivist: 'Archivist', typist: 'Typist', it: 'IT tech', courier: 'Courier', researcher: 'Researcher', planner: 'Planner', librarian: 'Librarian',
+/** Everyone's name (approved round 8: the user named them; Paige, the Librarian, was Claude's pick). */
+export const NAME: Record<Role | 'manager', string> = {
+  manager: 'Claude', archivist: 'Susan', typist: 'Mary-Beth', it: 'Lauren', courier: 'John', researcher: 'Leo', planner: 'Molly', librarian: 'Paige',
 }
+const JOB_WORD: Record<Role | 'manager', string> = {
+  manager: 'boss', archivist: 'files', typist: 'edit', it: 'IT', courier: 'mail', researcher: 'web', planner: 'plan', librarian: 'skill',
+}
+/** What the list calls each one (approved round 8, "Name and job"): "Lauren · IT". */
+export const WHO = Object.fromEntries(Object.entries(NAME).map(([k, n]) => [k, n + ' · ' + JOB_WORD[k as Role | 'manager']])) as Record<Role | 'manager', string>
 
 /** How a list line or bubble reads: plain, dim, warning, failure, success. */
 export type Tone = '' | 'warn' | 'bad' | 'good' | 'idle'
@@ -344,7 +350,7 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
  * staff member with no job (their name), who may share one line with the others (`group`: where they are, in a
  * word); `sub` — one of a worker's several jobs, and `merged` — the worker's line with all of them on it.
  */
-export type Line = { dot: string; who: string; what: string; tone: Tone; rank?: number; free?: string; group?: string; sub?: boolean; merged?: string }
+export type Line = { dot: string; who: string; what: string; tone: Tone; rank?: number; free?: string; group?: string; sub?: boolean; merged?: string; name?: string }
 
 const secTone = (s: Sec): Tone => (s.status === 'done' ? 'good' : s.status === 'fail' ? 'bad' : s.status === 'idle' ? 'warn' : '')
 const secRank = (s: Sec): number => (s.status === 'run' ? 2 : s.status === 'fail' ? 1 : 4)
@@ -367,20 +373,20 @@ export function freeWords(v: View): string {
  * look in the picture, so their dot matches their clothes.
  */
 export function lines(v: View, seated?: readonly (string | null)[], doing?: (r: Role) => string, lookOf?: (id: string) => number | undefined): Line[] {
-  const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone, rank: 0 }]
+  const out: Line[] = [{ dot: DOT.manager, who: WHO.manager, what: v.line, tone: v.tone, rank: 0, name: NAME.manager }]
   for (const r of ROLES) {
     const w = v.workers[r]
     // Working from home (approved round 6): on a call while they have a job.
     if (w && remote(r) && w.state !== 'error') {
-      out.push({ dot: DOT[r], who: ROLE_NAME[r], what: (w.state === 'linger' ? w.full : w.jobs.length > 1 ? w.jobs.length + ' at once: ' + w.jobs.join(' · ') : w.full) + ' (on a call)', tone: w.state === 'linger' ? 'idle' : '', rank: w.state === 'linger' ? 4 : 2 })
+      out.push({ dot: DOT[r], who: WHO[r], name: NAME[r], what: (w.state === 'linger' ? w.full : w.jobs.length > 1 ? w.jobs.length + ' at once: ' + w.jobs.join(' · ') : w.full) + ' (on a call)', tone: w.state === 'linger' ? 'idle' : '', rank: w.state === 'linger' ? 4 : 2 })
       continue
     }
-    if (!w) out.push({ dot: DOT[r], who: ROLE_NAME[r], what: doing?.(r) ?? freeWords(v), tone: 'idle', rank: 5, free: ROLE_NAME[r], group: freeWords(v) })
+    if (!w) out.push({ dot: DOT[r], who: WHO[r], name: NAME[r], what: doing?.(r) ?? freeWords(v), tone: 'idle', rank: 5, free: NAME[r], group: freeWords(v) })
     else if (w.state === 'work' && w.jobs.length > 1) {
-      out.push({ dot: DOT[r], who: ROLE_NAME[r], what: w.jobs.length + ' at once', tone: '', rank: 2, merged: w.jobs.length + ' at once: ' + w.jobs.join(' · ') })
+      out.push({ dot: DOT[r], who: WHO[r], name: NAME[r], what: w.jobs.length + ' at once', tone: '', rank: 2, merged: w.jobs.length + ' at once: ' + w.jobs.join(' · ') })
       w.jobs.slice(0, 3).forEach(j => out.push({ dot: '', who: '', what: '└ ' + j, tone: '', rank: 2, sub: true }))
       if (w.jobs.length > 3) out.push({ dot: '', who: '', what: '└ +' + (w.jobs.length - 3) + ' more', tone: 'idle', rank: 2, sub: true })
-    } else out.push({ dot: DOT[r], who: ROLE_NAME[r], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'linger' ? 'idle' : '', rank: w.state === 'error' ? 1 : w.state === 'linger' ? 4 : 2 })
+    } else out.push({ dot: DOT[r], who: WHO[r], name: NAME[r], what: w.full, tone: w.state === 'error' ? 'bad' : w.state === 'linger' ? 'idle' : '', rank: w.state === 'error' ? 1 : w.state === 'linger' ? 4 : 2 })
     if (r === 'it' && v.bg.length) out.push({ dot: '', who: '', what: '└ ' + plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle', rank: 6 })
   }
   if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '', rank: 3 })
@@ -400,8 +406,8 @@ export function lines(v: View, seated?: readonly (string | null)[], doing?: (r: 
 
 /* ===== the list, wrapped to the pane ===== */
 
-/** The name column: always this wide (it never shrinks for a long line); "Researcher" and a space. */
-export const WHO_W = 11
+/** The name column: always this wide (it never shrinks for a long line); "Mary-Beth · edit" and a space. */
+export const WHO_W = 17
 /** The dot column ("● "). */
 export const DOT_W = 2
 /** A long line takes at most this many rows. */
@@ -521,7 +527,7 @@ export function fitRows(all: Line[], width: number, max: number): Line[] {
     used += n
   }
   const kept = ls.flatMap((l, i) => (keep.has(i) ? wrapLine(l, width, keep.get(i)) : []))
-  const gone = ls.filter((_, i) => !keep.has(i)).flatMap(l => (l.free ? l.free.split(', ') : l.who ? [l.who] : ['background']))
+  const gone = ls.filter((_, i) => !keep.has(i)).flatMap(l => (l.free ? l.free.split(', ') : l.name ? [l.name] : l.who ? [l.who] : ['background']))
   if (!gone.length) return kept
   return [...kept, { dot: '', who: '+' + gone.length + ' more', what: nameList(gone, Math.max(8, width - DOT_W - WHO_W)), tone: 'idle', rank: 6 }]
 }

@@ -36,7 +36,7 @@ export function fnv(s: string, h = 0x811c9dc5): number {
 
 const TOOLS: [string, Record<string, unknown>][] = [
   ['Read', { file_path: '/p/src/auth.ts' }], ['Read', { file_path: '/p/README.md' }], ['Grep', { pattern: 'login' }],
-  ['Glob', { pattern: '**/*.tsx' }], ['Bash', { command: 'npm test' }], ['Bash', { command: 'git push' }], ['Bash', { command: 'ls src' }], ['Bash', { command: 'sleep 8 && echo hi', run_in_background: true }],
+  ['Glob', { pattern: '**/*.tsx' }], ['Bash', { command: 'npm test' }], ['Bash', { command: 'git push' }], ['Bash', { command: 'ls src' }], ['Bash', { command: 'curl -sI localhost:3000' }], ['Bash', { command: 'sleep 8 && echo hi', run_in_background: true }],
   ['Edit', { file_path: '/p/src/auth.ts' }], ['Write', { file_path: '/p/notes.md' }], ['WebSearch', { query: 'oauth expiry' }],
   ['WebFetch', { url: 'https://example.dev/docs' }], ['TodoWrite', {}], ['Skill', { skill: 'eli5' }], ['ToolSearch', { query: 'select:Read' }],
   ['SendMessage', { to: 'tester' }], ['mcp__claude-in-chrome__navigate', {}], ['Agent', { description: 'find the login bug' }],

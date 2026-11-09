@@ -170,6 +170,10 @@ export function plate(sc: Scene, cx: number, row: number, word: string): void {
   const s = ' ' + word + ' '
   sc.text(cx - Math.floor(s.length / 2), row, s, PLATE_INK, PLATE)
 }
+/** A name tag (approved round 8, "Black and gold"): a black nameplate with gold letters, as wide as the name, centered on cx. */
+export function nameplate(sc: Scene, cx: number, row: number, name: string): void {
+  sc.text(cx - Math.floor(name.length / 2), row, name, '#f0cf6a', '#2b2420')
+}
 
 /** The coffee machine under the window; brewing: a cup under the spout, drips and steam. */
 export function coffeeMachine(fb: FB, x: number, y: number, brewing: boolean, f: number): void {

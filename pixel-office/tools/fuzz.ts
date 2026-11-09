@@ -4,7 +4,7 @@
 // Default: 6 seeds × 10 000 ticks (60 000), each day with its own night and /clear. --draw also draws every frame.
 // Prints the broken rules (at most 5 of each) and the coverage; exits 1 on a broken rule.
 
-import { ROLE_NAME, ROLES, DOT_W, WHO_W, fitRows, lines, textWidth } from '../hooks/office'
+import { WHO, ROLES, DOT_W, WHO_W, fitRows, lines, textWidth } from '../hooks/office'
 import { workTime } from '../hooks/life'
 import { decorAt, REMOTE, skyAt } from '../hooks/world'
 import { scenario, type Clock } from '../tests/scenario'
@@ -98,6 +98,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     saw('cat ' + sim.cat.pose() + (sim.cat.desk() >= 0 ? ' on desk ' + sim.cat.desk() : ''))
     if (v.mood === 'think' && (/^pace/.test(md) || md === 'coffee' || md === 'board')) saw('manager thinks at ' + md)
     if (life.calling(sim.tick)) saw('manager calls out')
+    if (life.lap) saw('laptop ' + life.lap)
     if (v.mood === 'done' && /Done in ([2-9]|\d\d+)m/.test(v.line)) saw('party')
     if (sim.actors.get('courier')?.dest === 'door') saw('parcel at the door')
 
@@ -202,13 +203,13 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     // The list: every staff member on exactly one line; fitRows within its rows, the Manager first, no row too wide.
     const ls = lines(v, seated, r => sim.doing(v, r), id => sim.lookOf(id))
     for (const r of ROLES) {
-      const n = ls.filter(l => l.who === ROLE_NAME[r]).length
-      if (n !== 1) at('list: ' + ROLE_NAME[r] + ' on ' + n + ' lines')
+      const n = ls.filter(l => l.who === WHO[r]).length
+      if (n !== 1) at('list: ' + WHO[r] + ' on ' + n + ' lines')
     }
     for (const [w, rows] of [[64, 40], [40, 12], [30, 4], [36, 2], [64, 1]] as const) {
       const fit = fitRows(ls, w, rows)
       if (fit.length > rows) at('fitRows: ' + fit.length + ' rows for ' + rows)
-      if (fit[0]?.who !== 'Manager') at('fitRows: first row is ' + fit[0]?.who)
+      if (fit[0]?.who !== WHO.manager) at('fitRows: first row is ' + fit[0]?.who)
       for (const l of fit) if (textWidth(l.what) > Math.max(8, w - DOT_W - WHO_W)) at('fitRows: too wide at ' + w + ': ' + l.what)
     }
   })

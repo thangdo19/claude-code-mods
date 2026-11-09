@@ -42,6 +42,8 @@ const look = (d: LookDef): Look => {
       b: mix(d.skin, '#ff6f91', 0.5), R: C(PHONE.hand), o: mix(d.skin, '#3a1014', 0.7),
       // Holiday hats (approved round 7): Santa's red and its shade, a party hat's blue and yellow.
       u: C('#d63a3a'), U: C('#a82a2a'), x: C('#4aa3ff'), z: C('#ffd84a'),
+      // The heart sticker on the IT girl's laptop (approved round 8).
+      i: C('#ff6f91'),
     },
   }
 }

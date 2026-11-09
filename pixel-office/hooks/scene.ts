@@ -7,12 +7,13 @@ import { still, Scene } from './gfx/fb'
 import { board, boardWords, type BoardItem } from './art/board'
 import { iconBubble, textBubble, thinkBubble, zzz } from './art/bubbles'
 import {
-  bossChair, cabinet, clock, coffeeMachine, desk, deskPhone, door, globe, monitor, officeChair, plant, plate, rack, room, typewriter, waterCooler,
+  bossChair, cabinet, clock, coffeeMachine, desk, deskPhone, door, globe, monitor, nameplate, officeChair, plant, plate, rack, room, typewriter,
+  waterCooler,
 } from './art/furniture'
 import { LOOK, secLook, type Look } from './art/looks'
 import { P } from './art/palette'
 import { drawPerson, workFx, type Arms, type Face } from './art/people'
-import { ROLES, type Tone, type View } from './office'
+import { NAME, ROLES, type Tone, type View } from './office'
 import { agentOf, isRole, secActor, type BigSim } from './walk'
 import { decorAt, DESK_KIND, DESK_OWNER, remote, skyAt } from './world'
 import { cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, printer, skyPane, starFrame, testLamp } from './art/extras'
@@ -20,7 +21,8 @@ import { deskDecor, plantCorner, stockings, wallDecor, windowFx, wreath } from '
 import { HOME, managerFree, meeting, SUP, type ActKind, type Icon, type Who } from './life'
 import { isUrgent, isWork } from './moods'
 import {
-  among, BIG_COLS, BIG_ROWS, BOSS_BUBBLE, DEPTH, DESK_SPOTS, DESKS, FRONT_DESK, FURNITURE, IT_BUBBLE_X, PATROL_SPOTS, REPORT_SPOTS, SIGN_AT, SPOTS, WAIT_SPOTS,
+  among, BIG_COLS, BIG_ROWS, BOSS_BUBBLE, DEPTH, DESK_SPOTS, DESKS, FRONT_DESK, FURNITURE, IT_BUBBLE_X, NAME_AT, PATROL_SPOTS, REPORT_SPOTS, SIGN_AT, SPOTS,
+  WAIT_SPOTS,
   type SpotId,
 } from './layout'
 
@@ -35,8 +37,6 @@ const BREAK_ARMS: Record<ActKind, Arms> = {
   sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
   stretch: 'stretch', report: 'talk', tick: 'point', own: 'type', huddle: 'talk', ship: 'down', eat: 'eat', garden: 'water', hello: 'raise',
 }
-/** The lightbulb (approved round 6): what the Manager calls out to whoever gets the job. */
-const CALL: Record<Role, string> = { archivist: 'Archivist!', typist: 'Typist!', it: 'IT!', courier: 'Courier!', researcher: 'Research!', planner: 'Planner!', librarian: 'Librarian!' }
 /** The test lamp (approved round 6): a shell command that runs tests. */
 const TESTS = /\b(test|tests|pytest|vitest|jest|spec|check)\b/
 /** Own work at the station (approved round 4): files in hand, the rack's keys, sorting the mail, the keys at the desk. */
@@ -159,6 +159,9 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     // Signs on the wall over the cabinets (left of where the Archivist's bubble shows) and the rack.
     plate(sc, SIGN_AT.archivist.x, SIGN_AT.archivist.row, SIGN.archivist)
     plate(sc, SIGN_AT.it.x, SIGN_AT.it.row, SIGN.it)
+    // Their name tags over the signs (approved round 8): Susan and Lauren have no desk.
+    nameplate(sc, NAME_AT.archivist.x, NAME_AT.archivist.row, NAME.archivist)
+    nameplate(sc, NAME_AT.it.x, NAME_AT.it.row, NAME.it)
     if (hereAt('coffee')) coffeeMachine(fb, U.coffee.x, U.coffee.y, true, F)
     else still(fb, 'coffee', f => coffeeMachine(f, U.coffee.x, U.coffee.y, false, 0))
   })
@@ -188,16 +191,16 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const cd = U.courierDesk
     still(fb, 'courier desk', f => desk(f, cd.x, cd.y, cd.w, cd.h))
     plate(sc, SIGN_AT.courier.x, SIGN_AT.courier.row, SIGN.courier)
+    nameplate(sc, NAME_AT.courier.x, NAME_AT.courier.row, NAME.courier)
     // The globe at the desk's left end, the red desk phone right of the Courier.
     if (busy('courier')) globe(fb, U.globe.x, U.globe.y, true, F)
     else still(fb, 'globe', f => globe(f, U.globe.x, U.globe.y, false, 0))
     still(fb, 'phone ' + onCall, f => deskPhone(f, U.deskPhone.x, U.deskPhone.y, onCall))
     const bd = U.bossDesk
-    const bp = U.bossPlate
-    still(fb, 'boss desk', f => {
-      desk(f, bd.x, bd.y, bd.w, bd.h)
-      f.r(bp.x, bp.y, bp.w, bp.h, P.gold)
-    })
+    still(fb, 'boss desk', f => desk(f, bd.x, bd.y, bd.w, bd.h))
+    // The desk sign and the nameplate (approved round 8), in front of the Manager's chair.
+    plate(sc, SIGN_AT.manager.x, SIGN_AT.manager.row, 'MANAGER')
+    nameplate(sc, NAME_AT.manager.x, NAME_AT.manager.row, NAME.manager)
     const gaming = managerFree(v) && life.activity('manager') === 'game' && sim.here('manager', 'chair')
     const on = isWork(v.mood)
     if (on || gaming) monitor(fb, U.bossMonitor.x, U.bossMonitor.y, on, F, gaming)
@@ -214,6 +217,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     const td = U.typistDesk
     still(fb, 'typist desk', f => desk(f, td.x, td.y, td.w, td.h))
     plate(sc, SIGN_AT.typist.x, SIGN_AT.typist.row, SIGN.typist)
+    nameplate(sc, NAME_AT.typist.x, NAME_AT.typist.row, NAME.typist)
     if (busy('typist')) typewriter(fb, U.typewriter.x, U.typewriter.y, true, F)
     else still(fb, 'typewriter', f => typewriter(f, U.typewriter.x, U.typewriter.y, false, 0))
   })
@@ -251,6 +255,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         still(fb, 'front desk ' + i, f => desk(f, dx + D.desk.x, D.desk.y, D.desk.w, D.desk.h))
         callScreen(fb, dx, F, r && (w || hi) ? g => drawPerson(g, dx + 4, 46, LOOK[r], { maxRow: 6, arms: 'talk', talk: !w || w.state === 'work' ? 'speak' : 'listen', smile: !w || w.state === 'linger', f: F }) : null)
         plate(sc, dx + D.sign.x, D.sign.row, r ? SIGN[r] : DESK_SIGN.call)
+        // The caller's name at the bottom of the screen (approved round 8), as a video call shows it.
+        if (r) sc.text(dx + D.tvName.x, D.tvName.row, NAME[r], '#ffffff', '#20242c')
       })
       if (r && w) {
         if (w.state === 'work') calls.push([dx + 7, bubbleRow(SPOTS.desk0.feet), life.hold(r, w.short, sim.tick), ''])
@@ -265,6 +271,9 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     at(DEPTH.frontDesks, () => {
       still(fb, 'front desk ' + i, f => desk(f, dx + D.desk.x, D.desk.y, D.desk.w, D.desk.h))
       plate(sc, dx + D.sign.x, D.sign.row, id ? 'AGENT' : DESK_SIGN[kind])
+      // The name tag (approved round 8): the owner's (Molly's), or an agent's own name while it sits there.
+      const name = id ? sec?.name : owner ? NAME[owner] : undefined
+      if (name) nameplate(sc, dx + D.nameplate.x, D.nameplate.row, name.slice(0, D.nameplate.most))
       const on = (here && sec?.status === 'run') || ownerWorks
       if (on) monitor(fb, dx + D.monitor.x, D.monitor.y, true, F + i)
       else still(fb, 'front monitor ' + i, f => monitor(f, dx + D.monitor.x, D.monitor.y, false, 0))
@@ -332,7 +341,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         else if (act) {
           /* on a break at the desk: no bubble */
         }
-        else if (call) bubbles.push([BOSS_BUBBLE.words.x, BOSS_BUBBLE.words.row, CALL[call], ''])
+        // The lightbulb (approved round 6): the Manager calls whoever gets the job, by name (round 8).
+        else if (call) bubbles.push([BOSS_BUBBLE.words.x, BOSS_BUBBLE.words.row, NAME[call] + '!', ''])
         else if (v.mood === 'think' || life.think > 0) thoughts.push([BOSS_BUBBLE.think.x, BOSS_BUBBLE.think.y])
         else if (b) bubbles.push([BOSS_BUBBLE.words.x, BOSS_BUBBLE.words.row, b[0], b[1]])
       } else if (walking) {
@@ -396,6 +406,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       if (act === 'report' && !among(REPORT_SPOTS, a.dest)) arms = 'phone'
       if (act === 'stretch' && !walking) eyes = 'closed'
       if (walking && act === 'mug') arms = 'walkMug'
+      // The IT girl's laptop (approved round 8): open at the rack, or shut under her arm to report and back.
+      if (role === 'it' && life.lap) arms = life.lap === 'open' ? 'laptop' : walking ? 'walkLaptop' : 'laptopShut'
       // Ship it (approved round 6): packing a git push, then carrying the parcel to the door; the party.
       if (role === 'courier' && ((w?.state === 'work' && /\bgit push\b/.test(w.full)) || (act === 'ship' && !(here && sim.tick > (life.acts.get('courier')?.until ?? 0) - 4)))) {
         const packing = w?.state === 'work'
@@ -419,7 +431,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
 
     if (a.leaving) bubble = null
     const person = lk
-    const pose = walking && arms !== 'walkMug' && arms !== 'walkBroom' ? 'walk' : arms
+    const pose = walking && arms !== 'walkMug' && arms !== 'walkBroom' && arms !== 'walkLaptop' ? 'walk' : arms
     const busyNow = working && here
     // At work everything moves every tick (8 a second); otherwise at the calm 4; after Esc nothing moves.
     const pf = v.frozen ? F + a.id.length : walking ? walkStep(a) : busyNow ? tick : F + a.id.length

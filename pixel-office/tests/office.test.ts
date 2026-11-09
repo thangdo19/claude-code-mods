@@ -69,31 +69,32 @@ test('Esc freezes everyone for a moment, then the Manager is on a break', async 
 
 test('the list: everyone keeps a line; long lines wrap; short of rows it gives way step by step and names who is left out', async () => {
   const L = (who: string, what: string, more: Partial<Line> = {}): Line => ({ dot: '#fff', who, what, tone: '', ...more })
-  const free = (who: string, what: string) => L(who, what, { tone: 'idle', rank: 5, free: who, group: 'on a break' })
+  const free = (name: string, job: string, what: string) => L(name + ' · ' + job, what, { tone: 'idle', rank: 5, free: name, name, group: 'on a break' })
   const all = [
-    L('Manager', 'Planning (plan mode)', { rank: 0 }),
-    L('Archivist', 'Read src/components/settings/NotificationPreferencesPanel.tsx', { rank: 2 }),
-    free('Typist', 'having a coffee'),
-    free('IT tech', 'chatting with the Courier'),
+    L('Claude · boss', 'Planning (plan mode)', { rank: 0, name: 'Claude' }),
+    L('Susan · files', 'Read src/components/settings/NotificationPreferencesPanel.tsx', { rank: 2, name: 'Susan' }),
+    free('Mary-Beth', 'edit', 'having a coffee'),
+    free('Lauren', 'IT', 'chatting with John'),
     L('To-do', '1/3 · Fix it', { tone: 'idle', rank: 6 }),
   ]
   const rows = fitRows(all, 64, 10)
-  expect(rows.map(r => r.who)).toEqual(['Manager', 'Archivist', '', 'Typist', 'IT tech', 'To-do'])
+  expect(rows.map(r => r.who)).toEqual(['Claude · boss', 'Susan · files', '', 'Mary-Beth · edit', 'Lauren · IT', 'To-do'])
   // A path breaks after a "/", never inside a name; no row is wider than the room beside the names.
   expect(rows[1]!.what).toBe('Read src/components/settings/')
   expect(rows[2]!.what).toBe('NotificationPreferencesPanel.tsx')
   for (const r of rows) expect(textWidth(r.what)).toBeLessThanOrEqual(64 - 2 - WHO_W)
   const fit = (n: number) => fitRows(all, 64, n).map(r => r.who + ': ' + r.what)
   // 1. Short of rows: a long line gets one row, cut with "…"; everyone still has their own line.
-  expect(fit(5)).toEqual(['Manager: Planning (plan mode)', 'Archivist: Read src/components/settings/ …', 'Typist: having a coffee', 'IT tech: chatting with the Courier', 'To-do: 1/3 · Fix it'])
+  expect(fit(5)).toEqual(['Claude · boss: Planning (plan mode)', 'Susan · files: Read src/components/settings/ …', 'Mary-Beth · edit: having a coffee', 'Lauren · IT: chatting with John', 'To-do: 1/3 · Fix it'])
   // 2. Fewer: the free share one line that still names them.
-  expect(fit(4)[2]).toBe('Others: Typist, IT tech · on a break')
-  // 3. Fewer still: the least important go and the last row names them; the Manager always stays.
-  expect(fit(3)).toEqual(['Manager: Planning (plan mode)', 'Archivist: Read src/components/settings/ …', '+3 more: Typist, IT tech, To-do'])
-  expect(fit(1)).toEqual(['Manager: Planning (plan mode)'])
+  expect(fit(4)[2]).toBe('Others: Mary-Beth, Lauren · on a break')
+  // 3. Fewer still: the least important go and the last row names them (by name); the Manager always stays.
+  expect(fit(3)).toEqual(['Claude · boss: Planning (plan mode)', 'Susan · files: Read src/components/settings/ …', '+3 more: Mary-Beth, Lauren, To-do'])
+  expect(fit(1)).toEqual(['Claude · boss: Planning (plan mode)'])
+  expect(fitRows([all[0]!, all[1]!, all[4]!, L('John · mail', 'Bash: git status', { rank: 2, name: 'John' })], 64, 3).at(-1)?.what).toBe('To-do, John')
   // A worker's several jobs share one line before anyone else gives way.
-  const many = [all[0]!, L('IT tech', '2 at once', { rank: 2, merged: '2 at once: $ npm test · $ npm run lint' }), L('', '└ $ npm test', { rank: 2, sub: true }), L('', '└ $ npm run lint', { rank: 2, sub: true }), free('Typist', 'proofreading'), free('Courier', 'sorting the mail')]
-  expect(fitRows(many, 64, 4).map(r => r.who)).toEqual(['Manager', 'IT tech', 'Typist', 'Courier'])
+  const many = [all[0]!, L('Lauren · IT', '2 at once', { rank: 2, merged: '2 at once: $ npm test · $ npm run lint' }), L('', '└ $ npm test', { rank: 2, sub: true }), L('', '└ $ npm run lint', { rank: 2, sub: true }), free('Mary-Beth', 'edit', 'proofreading'), free('John', 'mail', 'sorting the mail')]
+  expect(fitRows(many, 64, 4).map(r => r.who)).toEqual(['Claude · boss', 'Lauren · IT', 'Mary-Beth · edit', 'John · mail'])
   // Very long: three rows at most, the last ending with an ellipsis.
   const long = wrapLine(L('Desk 1', 'word '.repeat(80)), 40)
   expect(long.length).toBe(3)
