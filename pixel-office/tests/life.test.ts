@@ -3,32 +3,41 @@ import { expect, test } from 'claude-code/testing'
 import { renderBig } from '../hooks/scene'
 import { BigSim } from '../hooks/walk'
 import { REPORT_AFTER } from '../hooks/life'
+import { BOSS_BUBBLE } from '../hooks/layout'
 import { EMPTY, endJob, fitRows, lines, MIN_SHOW, NIGHT_MS, ROLE_NAME, ROLES, setMood, startJob, startTurn, view } from '../hooks/office'
+import { remote } from '../hooks/world'
 
 import { run, sec, todoTurn } from './helpers'
 
 const BREAK_SPOTS = ['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist']
-const STAFF = ['archivist', 'typist', 'it', 'courier', 'researcher', 'planner', 'librarian'] as const
+/** The staff who work in the office (the Researcher and the Librarian work from home: approved round 6). */
+const STAFF = ['archivist', 'typist', 'it', 'courier', 'planner'] as const
 
 test('staff are in all day, take breaks, hurry to a job, and go home at night', async () => {
   const sim = new BigSim()
   const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
   run(sim, day, 2, 1)
-  // Placed at once after a reload: everyone at their own station.
-  for (const r of ROLES) expect(sim.actors.has(r)).toBe(true)
+  // Placed at once after a reload: everyone at their own station; those working from home never come in.
+  for (const r of ROLES) expect(sim.actors.has(r)).toBe(!remote(r))
   run(sim, day, 2, 400)
   // Everyone has their own line in the list, saying what they do on their break.
   const v = view(day, 50_000)
   const ls = lines(v, sim.seated(), r => sim.doing(v, r))
   for (const r of ROLES) expect(ls.filter(l => l.who === ROLE_NAME[r]).map(l => l.tone)).toEqual(['idle'])
-  // A job: the Archivist goes to the cabinets.
-  const busy = startJob(startTurn(day, 50_000), { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 50_000 })
+  expect(ls.find(l => l.who === 'Researcher')?.what).toBe('working from home')
+  // A job: the Archivist goes to the cabinets; the Researcher takes theirs on the video call, still at home.
+  let busy = startJob(startTurn(day, 50_000), { id: 'r', role: 'archivist', short: 'a.ts', full: 'Read a.ts', startedAt: 50_000 })
+  busy = startJob(busy, { id: 'w', role: 'researcher', short: 'oauth', full: 'Web search: oauth', startedAt: 50_000 })
   run(sim, busy, 50_000, 40)
   expect(sim.here('archivist', 'archivist')).toBe(true)
+  expect(sim.actors.has('researcher')).toBe(false)
+  const bv = view(busy, 55_000)
+  expect(lines(bv, sim.seated(), r => sim.doing(bv, r)).find(l => l.who === 'Researcher')?.what).toBe('Web search: oauth (on a call)')
   // Night: everyone walks out of the door; the Manager stays.
   const night = { ...day, lastActivity: 1, moodAt: 1 }
   run(sim, night, NIGHT_MS + 10, 200)
   expect([...sim.actors.keys()]).toEqual(['manager'])
+  expect(sim.doing(view(night, NIGHT_MS + 40_000), 'librarian')).toBe('gone home')
 })
 
 test('while Claude works the break is over: everyone at their own desk at work of their own, or in a huddle', async () => {
@@ -38,7 +47,7 @@ test('while Claude works the break is over: everyone at their own desk at work o
   const work = startTurn(day, 50_000)
   run(sim, work, 50_000, 80)
   // (The Manager thinks: two come over to talk it over.)
-  const home = (r: string) => (r === 'researcher' ? 'desk0' : r === 'planner' ? 'desk1' : r === 'librarian' ? 'desk2' : r)
+  const home = (r: string) => (r === 'planner' ? 'desk1' : r)
   for (const r of STAFF) expect(sim.actors.get(r)!.dest).toBe(sim.life.activity(r) === 'huddle' ? sim.actors.get(r)!.dest : home(r))
   expect(STAFF.filter(r => sim.life.activity(r) === 'huddle').map(r => sim.actors.get(r)!.dest).sort()).toEqual(['rep0', 'rep1'])
   run(sim, setMood(work, 'work', 60_000), 60_000, 160)
@@ -49,22 +58,86 @@ test('while Claude works the break is over: everyone at their own desk at work o
   }
 })
 
-test('the Manager thinking a while calls two over to talk it over; a report always gets a spot', async () => {
+test('the Manager thinking 8 s calls two over to talk it over, once a stretch; a report always gets a spot', async () => {
   const sim = new BigSim()
   const o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
-  run(sim, o, 2, 120)
   const huddlers = () => STAFF.filter(r => sim.life.activity(r) === 'huddle')
+  // (Approved round 6, "Fewer huddles": not before 8 s of thinking.)
+  run(sim, o, 2, 60)
+  expect(huddlers()).toEqual([])
+  run(sim, o, 2 + 60 * 125, 8)
   // Nobody worked yet: the Planner and the Archivist.
   expect(huddlers()).toEqual(['archivist', 'planner'])
-  expect(sim.life.icon(sim, view(o, 15_000), 'archivist') ?? sim.life.icon(sim, view(o, 15_000), 'planner')).not.toBe(null)
-  const done = endJob(startJob(o, { id: 'e', role: 'typist', short: 'a.ts', full: 'Edit a.ts', startedAt: 15_000 }), 'e', 'typist', { short: 'a.ts', full: 'Edit a.ts', err: false, denied: false, endedAt: 15_100 })
-  let t = 15_000
-  while (sim.life.activity('typist') !== 'report' && t < 25_000) run(sim, done, (t += 125), 1)
+  run(sim, o, 2 + 68 * 125, 16)
+  expect(sim.life.icon(sim, view(o, 10_500), 'archivist') ?? sim.life.icon(sim, view(o, 10_500), 'planner')).not.toBe(null)
+  const done = endJob(startJob(o, { id: 'e', role: 'typist', short: 'a.ts', full: 'Edit a.ts', startedAt: 9_000 }), 'e', 'typist', { short: 'a.ts', full: 'Edit a.ts', err: false, denied: false, endedAt: 9_100 })
+  let t = 10_500
+  while (sim.life.activity('typist') !== 'report' && t < 14_000) run(sim, done, (t += 125), 1)
   expect(sim.actors.get('typist')!.dest.startsWith('rep')).toBe(true)
   expect(huddlers().length).toBe(1)
-  // The thinking ends: back to their desks.
-  run(sim, setMood(done, 'work', 30_000), 30_000, 80)
+  // It lasts 6 s, and the same stretch of thinking never calls another.
+  for (let i = 0; i < 160; i++) run(sim, o, 14_000 + i * 125, 1)
   expect(huddlers()).toEqual([])
+  expect(STAFF.some(r => sim.actors.get(r)!.dest.startsWith('rep'))).toBe(false)
+  // The thinking ends and starts again: a new stretch, a new huddle after 8 s.
+  run(sim, setMood(o, 'work', 40_000), 40_000, 8)
+  run(sim, setMood(o, 'think', 41_000), 41_000, 70)
+  expect(huddlers().length).toBe(2)
+})
+
+test('thinking a long while: chin, notes, a huddle at 8 s, pacing behind the desk, the board, a coffee, round again', async () => {
+  const sim = new BigSim()
+  const o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  const seen: string[] = []
+  for (let i = 0; i < 700; i++) {
+    run(sim, o, 2 + i * 125, 1)
+    const m = sim.actors.get('manager')!
+    const at = m.arrivedAt < 0 ? null : m.dest === 'chair' ? (sim.life.activity('archivist') === 'huddle' ? 'huddle' : sim.life.pose) : m.dest.replace(/[LR]$/, '')
+    if (at && seen[seen.length - 1] !== at) seen.push(at)
+  }
+  // (After the huddle the Manager waits at the desk, chin in hand, while the two walk back.)
+  expect(seen.slice(0, 8)).toEqual(['chin', 'notes', 'huddle', 'chin', 'pace', 'board', 'coffee', 'chin'])
+})
+
+test('a job right after thinking: a lightbulb, then the Manager calls out who gets it; not long after', async () => {
+  const sim = new BigSim()
+  const o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  run(sim, o, 2, 30)
+  const job = startJob(setMood(o, 'work', 3_800), { id: 'g', role: 'archivist', short: 'login', full: 'Search "login"', startedAt: 3_800 })
+  run(sim, job, 3_800, 1)
+  expect(sim.life.icon(sim, view(job, 3_900), 'manager')).toBe('bulb')
+  run(sim, job, 3_925, 6)
+  expect(sim.life.calling(sim.tick)).toBe('archivist')
+  const sc = renderBig(view(job, 4_700), sim, 1, 2)
+  expect(sc.texts.filter(t => t.row === BOSS_BUBBLE.words.row).map(t => t.ch).join('')).toContain('Archivist!')
+  run(sim, job, 4_700, 40)
+  expect(sim.life.calling(sim.tick)).toBe(null)
+  // Long after the thinking: no lightbulb.
+  const later = startJob(job, { id: 'h', role: 'typist', short: 'a.ts', full: 'Edit a.ts', startedAt: 9_800 })
+  run(sim, later, 9_800, 1)
+  expect(sim.life.icon(sim, view(later, 9_900), 'manager')).not.toBe('bulb')
+})
+
+test('git push: the Courier packs a parcel, walks it to the door, comes back and reports once', async () => {
+  const sim = new BigSim()
+  let o = setMood(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'work', 1)
+  o = startJob(o, { id: 'p', role: 'courier', short: 'git push', full: '$ git push', startedAt: 1_000 })
+  run(sim, o, 1_000, 8)
+  const done = endJob(o, 'p', 'courier', { short: 'git push', full: '$ git push', err: false, denied: false, endedAt: 1_500 })
+  let t = 2_000
+  while (sim.life.activity('courier') !== 'ship' && t < 8_000) run(sim, done, (t += 125), 1)
+  expect(sim.actors.get('courier')!.dest).toBe('door')
+  expect(sim.doorOpen()).toBe(true)
+  let reports = 0
+  let prev: string | null = null
+  for (let i = 0; i < 200; i++) {
+    run(sim, done, (t += 125), 1)
+    const k = sim.life.activity('courier')
+    if (k === 'report' && prev !== 'report') reports++
+    prev = k
+  }
+  expect(reports).toBe(1)
+  expect(sim.here('courier', 'courier')).toBe(true)
 })
 
 test('Claude writing the reply: the Manager dictates, the Typist types it, then reports it once', async () => {
@@ -131,7 +204,7 @@ test('plan mode: the Manager calls everyone free to the board', async () => {
   expect(sim.here('typist', 'meet3')).toBe(true)
   const v = view(o, 30_000)
   const ls = lines(v, sim.seated(), r => sim.doing(v, r))
-  expect(ls.filter(l => l.free).map(l => l.what)).toEqual(ROLES.map(() => 'at the board'))
+  expect(ls.filter(l => l.free).map(l => l.what)).toEqual(ROLES.map(r => (remote(r) ? 'working from home' : 'at the board')))
   // Short of rows, they share one line.
   expect(fitRows(ls, 40, 3).map(l => l.who + ': ' + l.what)).toEqual(['Manager: Planning (plan mode)', 'Staff: all at the board'])
 })
@@ -154,9 +227,9 @@ test('staff whose desks agents borrowed each stand somewhere of their own', asyn
   let o = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
   for (const id of ['a', 'b', 'c', 'd']) o = sec(o, id, 1)
   run(sim, o, 2, 400)
-  const spots = (['researcher', 'planner', 'librarian'] as const).map(r => sim.actors.get(r)!.dest)
-  expect(spots.some(s => s.startsWith('desk'))).toBe(false)
-  expect(new Set(spots).size).toBe(3)
+  // (Agents borrow only the Planner's desk.)
+  expect(sim.borrowed('planner')).toBe(true)
+  expect(sim.actors.get('planner')!.dest.startsWith('desk')).toBe(false)
 })
 
 test('the board shows the to-do words; the Manager walks over and ticks each done line once', async () => {
@@ -205,6 +278,7 @@ test('compacting: staff and the Manager step out, a busy agent keeps its desk, t
   expect(sim.doing(view(clean, 90_000), 'typist')).toBe('stepped out while the Janitor cleans')
   // Done: everyone back, the waiting teammate gets a desk again; the Janitor is gone.
   run(sim, o, 90_000, 400)
-  expect([...sim.actors.keys()].sort()).toEqual(['archivist', 'courier', 'it', 'librarian', 'manager', 'planner', 'researcher', 'sec:a', 'sec:b', 'typist'])
-  expect(sim.here('manager', 'chair')).toBe(true)
+  expect([...sim.actors.keys()].sort()).toEqual(['archivist', 'courier', 'it', 'manager', 'planner', 'sec:a', 'sec:b', 'typist'])
+  // (Still thinking: the Manager may be pacing or at the board, but inside.)
+  expect((['manager', ...STAFF] as const).every(r => !sim.actors.get(r)!.leaving)).toBe(true)
 })

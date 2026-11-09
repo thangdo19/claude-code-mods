@@ -6,7 +6,7 @@ import type { Look } from './looks'
 
 const SPR = ['..hhh..', '.hHhhh.', '.hsssh.', '.seseS.', '..sms..', '.ckTkc.', 'cccTccC', 'cccTccC', 's.ccC.s', '..ppP..', '..p.P..', '..p.P..', '.ff.ff.']
 
-export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'deskPhone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom'
+export type Arms = 'down' | 'type' | 'up' | 'chin' | 'raise' | 'phone' | 'deskPhone' | 'mug' | 'folder' | 'magnify' | 'point' | 'broom' | 'sleep' | 'walk' | 'walkMug' | 'water' | 'talk' | 'read' | 'tidy' | 'stretch' | 'walkBroom' | 'eat'
 /**
  * Which way someone faces (approved round 5, "Face the way they walk"): the front ('down', at rest and walking down),
  * the back ('up', walking up an aisle), or a side (walking, or standing turned to whoever they talk to).
@@ -65,7 +65,7 @@ const lookInfo = (L: Look) => {
 let nextLook = 0
 const ARMS: readonly (Arms | undefined)[] = [
   undefined, 'down', 'type', 'up', 'chin', 'raise', 'phone', 'deskPhone', 'mug', 'folder', 'magnify', 'point', 'broom', 'sleep', 'walk', 'walkMug', 'water',
-  'talk', 'read', 'tidy', 'stretch', 'walkBroom',
+  'talk', 'read', 'tidy', 'stretch', 'walkBroom', 'eat',
 ]
 const FACES: readonly Face[] = ['down', 'up', 'left', 'right']
 /**
@@ -248,6 +248,17 @@ function person(
         put(6, 5, 'C')
         put(6, 4, 's')
         for (const [a, b] of [[6, 2], [6, 3], [7, 2], [5, 4]] as const) put(a, b, 'R')
+        break
+      case 'eat':
+        // Lunch (approved round 6): a sandwich in hand, at the mouth now and then.
+        del(6, 8)
+        if ((f >> 2) % 2) {
+          put(6, 6, 's')
+          for (const [a, b, ch] of [[6, 4, 'y'], [7, 4, 'y'], [6, 5, 'L'], [7, 5, 'y']] as const) put(a, b, ch)
+        } else {
+          put(7, 7, 's')
+          for (const [a, b, ch] of [[7, 5, 'y'], [8, 5, 'y'], [7, 6, 'L'], [8, 6, 'y']] as const) put(a, b, ch)
+        }
         break
       case 'mug':
         del(6, 8)

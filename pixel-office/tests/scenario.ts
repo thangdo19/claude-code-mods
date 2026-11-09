@@ -14,6 +14,7 @@ import { CellCoder } from '../hooks/cells'
 import { Calm } from '../hooks/calm'
 import { Camera } from '../hooks/camera'
 import type { Scene } from '../hooks/gfx/fb'
+import { setClock } from '../hooks/world'
 
 /** The same random numbers every run. */
 export function seeded(seed: number): () => number {
@@ -35,7 +36,7 @@ export function fnv(s: string, h = 0x811c9dc5): number {
 
 const TOOLS: [string, Record<string, unknown>][] = [
   ['Read', { file_path: '/p/src/auth.ts' }], ['Read', { file_path: '/p/README.md' }], ['Grep', { pattern: 'login' }],
-  ['Glob', { pattern: '**/*.tsx' }], ['Bash', { command: 'npm test' }], ['Bash', { command: 'sleep 8 && echo hi', run_in_background: true }],
+  ['Glob', { pattern: '**/*.tsx' }], ['Bash', { command: 'npm test' }], ['Bash', { command: 'git push' }], ['Bash', { command: 'ls src' }], ['Bash', { command: 'sleep 8 && echo hi', run_in_background: true }],
   ['Edit', { file_path: '/p/src/auth.ts' }], ['Write', { file_path: '/p/notes.md' }], ['WebSearch', { query: 'oauth expiry' }],
   ['WebFetch', { url: 'https://example.dev/docs' }], ['TodoWrite', {}], ['Skill', { skill: 'eli5' }], ['ToolSearch', { query: 'select:Read' }],
   ['SendMessage', { to: 'tester' }], ['mcp__claude-in-chrome__navigate', {}], ['Agent', { description: 'find the login bug' }],
@@ -58,13 +59,16 @@ export type Tick = {
   list: string
 }
 
-export type Options = { ticks: number; seed?: number; draw?: boolean }
+/** The hour and date the day runs at (`setClock`); by default a June day at 10, so the golden frames never change. */
+export type Clock = { hour?: number; date?: readonly [number, number, number] }
+export type Options = { ticks: number; seed?: number; draw?: boolean; clock?: Clock }
 
 /** Runs the day; `each` sees every tick. With `draw: false` only the people move (for the fuzz's rule checks). */
 export function scenario(opt: Options, each: (t: Tick) => void): void {
   const rand = seeded(opt.seed ?? 1)
   const pick = <T>(xs: readonly T[]): T | undefined => (xs.length ? xs[Math.floor(rand() * xs.length)] : undefined)
   const draw = opt.draw !== false
+  setClock(opt.clock ?? { hour: 10, date: [2026, 6, 1] })
   let now = 1_000_000
   let o: Office = { ...EMPTY, lastActivity: now, moodAt: now }
   const sim = new BigSim()

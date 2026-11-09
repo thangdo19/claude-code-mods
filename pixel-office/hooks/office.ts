@@ -4,6 +4,7 @@
 import type { Done, Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
 import { fmtDuration, plain } from './labels'
 import { isMeeting, isStream, isUrgent, isWork } from './moods'
+import { remote } from './world'
 
 export const EMPTY: Office = {
   mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, recent: [], bg: [],
@@ -369,6 +370,11 @@ export function lines(v: View, seated?: readonly (string | null)[], doing?: (r: 
   const out: Line[] = [{ dot: DOT.manager, who: 'Manager', what: v.line, tone: v.tone, rank: 0 }]
   for (const r of ROLES) {
     const w = v.workers[r]
+    // Working from home (approved round 6): on a call while they have a job.
+    if (w && remote(r) && w.state !== 'error') {
+      out.push({ dot: DOT[r], who: ROLE_NAME[r], what: (w.state === 'linger' ? w.full : w.jobs.length > 1 ? w.jobs.length + ' at once: ' + w.jobs.join(' · ') : w.full) + ' (on a call)', tone: w.state === 'linger' ? 'idle' : '', rank: w.state === 'linger' ? 4 : 2 })
+      continue
+    }
     if (!w) out.push({ dot: DOT[r], who: ROLE_NAME[r], what: doing?.(r) ?? freeWords(v), tone: 'idle', rank: 5, free: ROLE_NAME[r], group: freeWords(v) })
     else if (w.state === 'work' && w.jobs.length > 1) {
       out.push({ dot: DOT[r], who: ROLE_NAME[r], what: w.jobs.length + ' at once', tone: '', rank: 2, merged: w.jobs.length + ' at once: ' + w.jobs.join(' · ') })

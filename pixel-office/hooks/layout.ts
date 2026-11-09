@@ -15,7 +15,10 @@ type At = { readonly x: number; readonly y: number }
 export const FURNITURE = {
   // The back wall.
   door: { x: 2, y: 4, w: 8, h: 17 },
-  clock: { x: 25, y: 2 },
+  /** The clock, over the water cooler (moved there in round 6 for the frame). */
+  clock: { x: 11, y: 1 },
+  /** Employee of the month (approved round 6): a gold frame where the clock was. */
+  frame: { x: 24, y: 0, w: 7, h: 8 },
   board: { x: 31, y: 2, w: 16, h: 11 },
   /** The board with the to-do words: two px taller, so its text rows sit inside the white. */
   boardWords: { x: 31, y: 2, w: 16, h: 13 },
@@ -23,7 +26,15 @@ export const FURNITURE = {
   cooler: { x: 12, y: 11 },
   cabinets: [{ x: 16, y: 8, w: 4, h: 13 }, { x: 20, y: 8, w: 4, h: 13 }],
   rack: { x: 51, y: 5, w: 6, h: 16 },
+  /** The test lamp on the rack's face (approved round 6), below where the IT girl's bubble reaches. */
+  testLamp: { x: 52, y: 11 },
   coffee: { x: 58, y: 13 },
+  /** The cat napping on the windowsill over the warm coffee machine: its left and its feet. */
+  catNap: { x: 58, y: 11 },
+  /** Two red lanterns on the wall at Tết (approved round 6). */
+  lanterns: [{ x: 17, y: 1 }, { x: 47, y: 1 }],
+  /** The printer on the floor by the coffee machine (approved round 6), above the Typist's chair. */
+  printer: { x: 57, y: 24 },
   // The middle row: the Courier's desk, the Manager's, the Typist's.
   chairs: [{ x: 4, y: 33, w: 9, h: 9 }, { x: 50, y: 33, w: 9, h: 9 }],
   courierDesk: { x: 0, y: 39, w: 16, h: 6 },
@@ -34,13 +45,17 @@ export const FURNITURE = {
   /** The gold name strip on the Manager's desk. */
   bossPlate: { x: 30, y: 41, w: 5, h: 1 },
   bossMonitor: { x: 24, y: 33 },
-  papers: { x: 37, y: 37 },
+  /** The Manager's red hotline to the CEO (approved round 6), where the papers were; hold music rises from `holdNotes`. */
+  bossPhone: { x: 36, y: 36 },
+  holdNotes: { x: 39, y: 34 },
   plant: { x: 39, y: 32 },
+  /** The party cake (approved round 6), on the Manager's desk. */
+  cake: { x: 35, y: 32 },
   typistDesk: { x: 49, y: 39, w: 15, h: 6 },
   typewriter: { x: 58, y: 39 },
   /** The napping Manager's "z z Z", rising from here. */
   zzz: { x: 37, y: 13 },
-} as const satisfies Record<string, Box | At | readonly Box[]>
+} as const satisfies Record<string, Box | At | readonly Box[] | readonly At[]>
 
 /** The front desks (agents' and the front-desk staff's), one every 16 px from the left; each part from its desk's left. */
 export const FRONT_DESK = {
@@ -52,6 +67,8 @@ export const FRONT_DESK = {
   sign: { x: 7, row: 29 },
   /** The frame round the desk of the agent you are viewing. */
   frame: { x: 0, y: 45, w: 15, h: 17 },
+  /** The cat sitting on a free desk by the monitor: its left and its feet. */
+  cat: { x: 3, y: 54 },
 } as const
 
 /** Brass signs over the stations: the middle of the word and its text row. */
@@ -74,13 +91,21 @@ export const IT_BUBBLE_X = 48
 export const DEPTH = {
   /** The back wall's furniture: behind everyone. */
   wall: 20.5,
+  /** The cat napping on the windowsill: over the coffee machine. */
+  catNap: 20.6,
+  /** The printer: by its foot row. */
+  printer: 32.5,
   bossChair: 41.4,
   chairs: 41.5,
   /** The Manager in the chair. */
   bossSeat: 42,
   desks: 44.5,
   frontChairs: 57.5,
+  /** The plant corner (desk 0): in front of whoever waters it. */
+  plantCorner: 59.9,
   frontDesks: 61.5,
+  /** The cat sitting on a front desk. */
+  catOnDesk: 61.6,
   /** Over everything (the z z Z). */
   top: 99,
 } as const
@@ -168,6 +193,20 @@ export const SPOTS = {
   // Reporting a finished job: at either end of the Manager's desk, the Manager still in view.
   rep0: spot([16, 40]),
   rep1: spot([43, 40]),
+  // Thinking on the move (approved round 6, "Many ways to think"): pacing behind the Manager's desk, on the Manager's
+  // own hallway.
+  paceL: spot([20, 42]),
+  paceR: spot([38, 42]),
+  // The plant corner at the first front desk (approved round 6): watering its plants.
+  garden: spot([6, 48], [[6, 60]]),
+  // The cat's stops (approved round 6), on the hallways: the windowsill (it jumps up), the two front desks with a
+  // monitor, and a few places to sit.
+  catSill: spot([57, 21]),
+  catDesk1: spot([24, 48]),
+  catDesk3: spot([56, 48]),
+  catMid: spot([16, 31]),
+  catRight: spot([43, 31]),
+  catCooler: spot([11, 21]),
 } as const satisfies Record<string, Spot>
 
 /** A spot's name: a typo in one is a type error. */

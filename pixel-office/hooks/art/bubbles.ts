@@ -58,7 +58,7 @@ export function thinkBubble(fb: FB, x: number, y: number, f: number, stage = 3):
 }
 
 /** A small bubble with a picture, not words: chatting, the meeting. Its tail points down at (cx, bottom). */
-export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check'): void {
+export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check' | 'bulb'): void {
   const W = 7
   const H = 6
   const x = Math.max(0, Math.min(cx - 3, fb.w - W))
@@ -75,6 +75,13 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
     bang: ['..#..', '..#..', '.....', '..#..'],
     ask: ['.###.', '...#.', '..#..', '..#..'],
     check: ['....#', '...#.', '#.#..', '.#...'],
+  }
+  // The lightbulb (approved round 6): an idea, yellow glass on a gray screw base.
+  if (icon === 'bulb') {
+    ;['.###.', '##o##', '.###.', '..g..'].forEach((r, j) =>
+      Array.from(r).forEach((ch, i) => ch !== '.' && fb.s(x + 1 + i, y + 1 + j, ch === 'g' ? '#8d97a4' : ch === 'o' ? '#fff6c8' : '#f2b33d')),
+    )
+    return
   }
   ;(art[icon] ?? []).forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + 1 + i, y + 1 + j, ink[icon] ?? OUT)))
 }

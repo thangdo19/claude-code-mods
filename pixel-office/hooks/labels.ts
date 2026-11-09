@@ -23,6 +23,19 @@ export const whoFor = (tool: string): Who =>
   ARCHIVE.has(tool) ? 'archivist' : TYPE.has(tool) ? 'typist' : IT.has(tool) ? 'it' : RESEARCH.has(tool) ? 'researcher'
     : PLAN.has(tool) ? 'planner' : LIBRARY.has(tool) ? 'librarian' : MANAGER.has(tool) ? 'manager' : 'courier'
 
+/**
+ * Bash is shared out (approved round 6, "Share the IT girl's pile": she had half of all jobs): commands that only look
+ * at files go to the Archivist, git to the Courier (who ships it), the rest stays with IT.
+ */
+const LOOK_CMDS = new Set(['cat', 'ls', 'grep', 'rg', 'find', 'head', 'tail', 'wc', 'sed', 'awk', 'tree', 'du', 'stat', 'file', 'diff', 'jq', 'less', 'cut', 'sort', 'pwd', 'which'])
+const SHIP_CMDS = new Set(['git', 'gh'])
+/** Who runs a shell command: by its first word, past any `cd …&&` and `rtk`. */
+export function bashWho(command: string): Role {
+  const words = command.replace(/^(\s*cd\s+[^&;]+(&&|;)\s*)+/, '').trim().split(/\s+/)
+  const w = words[0] === 'rtk' ? (words[1] ?? '') : (words[0] ?? '')
+  return LOOK_CMDS.has(w) ? 'archivist' : SHIP_CMDS.has(w) ? 'courier' : 'it'
+}
+
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
 /** Text cut to `n` characters, an ellipsis at the end when cut. */
@@ -95,7 +108,9 @@ export function describe(tool: string, input: Record<string, unknown>, cwd?: str
     case 'PowerShell': {
       const c = oneLine(mask(str(input.command)))
       const bg = input.run_in_background === true
-      return { who, short: c.split(' ').slice(0, 2).join(' '), full: '$ ' + c + (bg ? ' (in background)' : '') }
+      // (Background commands stay with IT: they live on the server rack.)
+      const by = tool === 'Bash' && !bg ? bashWho(c) : who
+      return { who: by, short: c.split(' ').slice(0, 2).join(' '), full: '$ ' + c + (bg ? ' (in background)' : '') }
     }
     case 'BashOutput':
     case 'TaskOutput':

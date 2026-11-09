@@ -134,28 +134,6 @@ export function door(fb: FB, x: number, y: number, w: number, h: number, open: b
     fb.s(x + w - 2, y + Math.floor(h / 2) + 1, P.knob)
   }
 }
-export function windowPane(fb: FB, x: number, y: number, w: number, h: number, night: boolean, f: number): void {
-  fb.r(x, y, w, h, '#eef1f4')
-  const ix = x + 1
-  const iy = y + 1
-  const iw = w - 2
-  const ih = h - 2
-  fb.r(ix, iy, iw, ih, night ? P.night : P.sky)
-  fb.clip = [ix, iy, ix + iw - 1, iy + ih - 1]
-  if (night) {
-    ;[[0, 1], [2, 3], [1, 5], [3, 6]].forEach(([a = 0, b = 0], k) => {
-      if ((f + k) % 5) fb.s(ix + a, iy + b, P.star)
-    })
-    fb.r(ix + iw - 2, iy + 1, 2, 2, P.moon)
-  } else {
-    const cx = ix + ((f >> 1) % (iw + 5)) - 3
-    fb.r(cx, iy + 2, 3, 1, P.cloud)
-    fb.s(cx + 1, iy + 1, P.cloud)
-  }
-  fb.clip = null
-  fb.r(x, y + Math.floor(h / 2), w, 1, '#eef1f4')
-  fb.r(x - 1, y + h, w + 2, 1, '#9aa3ae')
-}
 /** The wall clock: a dark rim round a white face, the hour hand up, the red second hand going round. */
 export function clock(fb: FB, x: number, y: number, f: number): void {
   fb.r(x + 1, y, 3, 1, '#4d5563')
@@ -175,11 +153,6 @@ export function bossChair(fb: FB, x: number, y: number): void {
   fb.r(x + 1, y + 2, 9, 11, P.chair2)
   fb.r(x + 1, y + 1, 9, 1, '#7a4230')
   for (const [a, b] of [[5, 4], [3, 6], [7, 6], [5, 8], [3, 10], [7, 10]] as const) fb.s(x + a, y + b, '#4a2a1e')
-}
-/** Two sheets of paper on a desk. */
-export function papers(fb: FB, x: number, y: number): void {
-  fb.r(x, y + 1, 3, 1, '#fbfbf7')
-  fb.r(x + 1, y, 3, 1, '#ecebe4')
 }
 export function plant(fb: FB, x: number, y: number): void {
   fb.r(x + 1, y + 4, 3, 3, P.pot)
