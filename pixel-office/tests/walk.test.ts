@@ -3,39 +3,43 @@ import { expect, test } from 'claude-code/testing'
 import { LOOK } from '../hooks/art/looks'
 import { BigSim, routeTo, SPOTS, type SpotId } from '../hooks/walk'
 import { DOT, EMPTY, startTurn, view } from '../hooks/office'
+import { AGENT_DESKS } from '../hooks/world'
 
 import { run, sec } from './helpers'
 
 test('walks follow the hallways, never through a desk', async () => {
-  // Staff (who never go to the Manager's chair) and the Manager (who also walks behind their own desk).
+  // Staff (who never go behind the Manager's desk: the chair, the pacing spots) and the Manager (who also walks there).
+  const bossOnly = ['chair', 'paceL', 'paceR']
   for (const boss of [false, true])
-    for (const to of (Object.keys(SPOTS) as SpotId[]).filter(k => boss || k !== 'chair'))
+    for (const to of (Object.keys(SPOTS) as SpotId[]).filter(k => boss || !bossOnly.includes(k)))
       for (const from of boss ? [SPOTS.chair!, SPOTS.board!] : [SPOTS.door!, SPOTS.desk2!, SPOTS.typist!]) {
         const r = routeTo([from.x, from.feet], to, boss)
         r.slice(1).forEach((p, i) => expect(p[0] === r[i]![0] || p[1] === r[i]![1]).toBe(true))
       }
 })
 
-test('more agents than desks wait in line; agents borrow staff desks; a waiting teammate gives its desk up', async () => {
+test("more agents than desks wait in line; agents take the free desk, then the Planner's; a waiting teammate gives its desk up", async () => {
   const sim = new BigSim()
   let o = startTurn(EMPTY, 1)
   for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) o = sec(o, id, 1)
   sim.sync(view(o, 2))
-  expect(sim.seated()).toEqual(['d', 'c', 'b', 'a'])
-  expect(sim.queue).toBe(2)
-  // The line at the door is the waiting agents themselves, first come first served.
-  expect(sim.actors.get('sec:e')?.dest).toBe('wait0')
-  expect(sim.actors.get('sec:f')?.dest).toBe('wait1')
-  expect(sim.borrowed('researcher')).toBe(true)
+  // (Approved round 6: never the plant corner, desk 0, or the video-call desk, desk 2.)
+  expect(AGENT_DESKS).toEqual([3, 1])
+  expect(sim.seated()).toEqual([null, 'b', null, 'a'])
+  expect(sim.queue).toBe(4)
+  // The line at the door is the waiting agents themselves, first come first served; the rest wait outside.
+  expect(['c', 'd', 'e'].map(id => sim.actors.get(`sec:${id}`)?.dest)).toEqual(['wait0', 'wait1', 'wait2'])
+  expect(sim.actors.has('sec:f')).toBe(false)
+  expect(sim.borrowed('planner')).toBe(true)
 
   const waiting = { ...o, secs: o.secs.map(s => (s.id === 'b' ? { ...s, status: 'idle' as const } : s)) }
   run(sim, waiting, 2, 60)
-  expect(sim.seated()).toEqual(['d', 'c', 'e', 'a'])
-  expect(sim.queue).toBe(2)
-  // e walked from the line to the desk; b walked out and waits behind the working f.
-  expect(sim.here('sec:e', 'desk2')).toBe(true)
-  expect(sim.actors.get('sec:f')?.dest).toBe('wait0')
-  expect(sim.actors.get('sec:b')?.dest).toBe('wait1')
+  expect(sim.seated()).toEqual([null, 'c', null, 'a'])
+  expect(sim.queue).toBe(4)
+  // c walked from the line to the desk; b walked out and waits behind the working ones.
+  expect(sim.here('sec:c', 'desk1')).toBe(true)
+  expect(['d', 'e', 'f'].map(id => sim.actors.get(`sec:${id}`)?.dest)).toEqual(['wait0', 'wait1', 'wait2'])
+  expect(sim.actors.has('sec:b')).toBe(false)
 })
 
 test('no two agents in the office look alike, however many come and go', async () => {

@@ -6,7 +6,8 @@
 
 import { ROLE_NAME, ROLES, DOT_W, WHO_W, fitRows, lines, textWidth } from '../hooks/office'
 import { workTime } from '../hooks/life'
-import { scenario } from '../tests/scenario'
+import { holidayAt, REMOTE, skyAt } from '../hooks/world'
+import { scenario, type Clock } from '../tests/scenario'
 
 const args = process.argv.slice(2)
 const nums = args.filter(a => /^\d+$/.test(a)).map(Number)
@@ -14,7 +15,13 @@ const TICKS = nums[0] ?? 10_000
 const SEEDS = nums[1] ?? 4
 const DRAW = args.includes('--draw')
 
-const BREAK_SPOTS = new Set(['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist'])
+const BREAK_SPOTS = new Set(['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist', 'garden'])
+/** Each seed's day at its own time (round 6): lunch at Christmas, sunset at Halloween, morning at Tết, a plain day. */
+const CLOCKS: Clock[] = [
+  { hour: 12, date: [2026, 12, 10] }, { hour: 18, date: [2026, 10, 25] }, { hour: 7, date: [2027, 2, 6] }, { hour: 10, date: [2026, 6, 1] },
+]
+/** The Manager thinking this many ticks before a huddle (`HUDDLE_AFTER` in life.ts). */
+const HUDDLE_AFTER = 64
 const CHATS = new Set(['chat', 'visit', 'host'])
 /** Places too close for two at once (`NEAR` in life.ts). */
 const CLOSE = [['rep0', 'visitCourier', 'supCourier'], ['rep1', 'visitTypist', 'supTypist']]
@@ -41,7 +48,12 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   const lastAct = new Map<string, string | undefined>()
   let cleanEnded = -1
   let prevJanitor = false
-  scenario({ ticks: TICKS, seed, draw: DRAW }, t => {
+  /** The thinking stretch (sim ticks): since when, and the tick its huddle started. */
+  let thinkSince = -1
+  let huddleAt = -1
+  const huddling = new Set<string>()
+  let catWalking = -1
+  scenario({ ticks: TICKS, seed, draw: DRAW, clock: CLOCKS[(seed - 1) % CLOCKS.length] }, t => {
     const { v, sim, i } = t
     const at = (m: string) => fail(m.split(':')[0]!, 'seed ' + seed + ' tick ' + i + ': ' + m)
     const life = sim.life
@@ -70,6 +82,40 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     if (/^(sup|patrol)/.test(md)) saw('manager checks in')
     if (md === 'board') saw('manager at the board')
     for (const s of v.secs) saw('agent ' + s.status + (s.teammate ? ' (teammate)' : ''))
+    saw('sky ' + (v.night ? 'night (idle)' : skyAt(v.now)))
+    const hol = holidayAt(v.now)
+    if (hol) saw('holiday ' + hol)
+    saw('cat ' + sim.cat.pose() + (sim.cat.desk() >= 0 ? ' on desk ' + sim.cat.desk() : ''))
+    if (v.mood === 'think' && (/^pace/.test(md) || md === 'coffee' || md === 'board')) saw('manager thinks at ' + md)
+    if (life.calling(sim.tick)) saw('manager calls out')
+    if (v.mood === 'done' && /Done in ([2-9]|\d\d+)m/.test(v.line)) saw('party')
+    if (sim.actors.get('courier')?.dest === 'door') saw('parcel at the door')
+
+    // Round 6: the Researcher and the Librarian work from home; agents only at desks 3 and 1.
+    for (const r of REMOTE) if (sim.actors.has(r)) at('remote inside: ' + r + ' to ' + sim.actors.get(r)!.dest)
+    const sd = sim.seated()
+    if (sd[0] || sd[2]) at('agent desk: ' + JSON.stringify(sd))
+    for (const a of inside) if (a.id.startsWith('sec:') && (a.dest === 'desk0' || a.dest === 'desk2')) at('agent desk: ' + a.id + ' to ' + a.dest)
+    // The cat never stuck.
+    const cw = sim.cat.t < sim.cat.length
+    if (!cw || v.frozen) catWalking = -1
+    else if (catWalking < 0) catWalking = i
+    else if (i - catWalking > STUCK) at('stuck: the cat walking to ' + sim.cat.dest + ' since tick ' + catWalking)
+    // Huddles: never before 8 s of thinking, once a stretch.
+    if (!v.frozen) {
+      if (v.mood !== 'think') thinkSince = huddleAt = -1
+      else if (thinkSince < 0) thinkSince = sim.tick
+      for (const r of ROLES) {
+        const on = life.activity(r) === 'huddle'
+        if (on && !huddling.has(r)) {
+          if (thinkSince < 0 || sim.tick - thinkSince < HUDDLE_AFTER) at('huddle early: ' + r + ' after ' + (sim.tick - thinkSince) + ' ticks')
+          else if (huddleAt >= 0 && huddleAt !== sim.tick) at('huddle twice in a stretch: ' + r)
+          huddleAt = sim.tick
+        }
+        if (on) huddling.add(r)
+        else huddling.delete(r)
+      }
+    }
 
     // No one stuck walking.
     for (const id of [...walkingSince.keys()]) if (!sim.actors.has(id)) walkingSince.delete(id)
@@ -137,7 +183,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     prevJanitor = v.janitor
     if (cleanEnded >= 0 && i - cleanEnded === BACK_IN) {
       cleanEnded = -1
-      const gone = ['manager', ...ROLES].filter(r => !sim.actors.has(r) || sim.actors.get(r)!.leaving)
+      const gone = ['manager', ...ROLES.filter(r => !REMOTE.includes(r))].filter(r => !sim.actors.has(r) || sim.actors.get(r)!.leaving)
       if (!v.night && gone.length) at('not back after cleaning: ' + gone.join(', '))
     }
     // The board ticks only done lines.

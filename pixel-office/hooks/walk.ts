@@ -7,16 +7,14 @@ import { ROLES, SEC_LOOKS, type View } from './office'
 import { Life, type Who } from './life'
 import type { Face } from './art/people'
 import { among, DESK_SPOTS, DESKS, DOOR, LANES, SPOTS, SWEEP_SPOTS, WAIT_SPOTS, type Pt, type SpotId } from './layout'
+import { AGENT_DESKS, DESK_OWNER } from './world'
+import { Cat } from './cat'
 
 export type { Pt, Spot, SpotId } from './layout'
 export { DESKS, DOOR, SPOTS } from './layout'
 
 /** The Janitor sweeps slowly: pixels a tick. */
 const SWEEP_SPEED = 1
-/** Who owns each front desk; the last one is kept free for agents. An agent may borrow an owner's desk while they have no job. */
-export const DESK_OWNER: readonly (Role | null)[] = ['researcher', 'planner', 'librarian', null]
-/** The order agents take desks: the free one first, then the staff's, from the right. */
-const AGENT_DESKS = [3, 2, 1, 0]
 
 export const routeLength = (r: readonly Pt[]): number => {
   let n = 0
@@ -181,6 +179,8 @@ export class BigSim {
   queue = 0
   tick = 0
   readonly life = new Life()
+  /** The office cat (approved round 6): not staff, it walks the hallways on its own. */
+  readonly cat = new Cat()
   private ready = false
   private readonly leaving = new Set<string>()
   /** Agent id → their look (index into the agent looks) while in the office: no two look alike. */
@@ -307,6 +307,7 @@ export class BigSim {
     if (v.frozen) return
     this.tick++
     this.life.step(this, v)
+    this.cat.step(this, v)
     this.sweep(v)
     for (const a of [...this.actors.values()]) {
       if (a.delay > 0) {
@@ -348,7 +349,7 @@ export class BigSim {
   }
 
   doorOpen(): boolean {
-    for (const a of this.actors.values()) if (a.dest === 'wait2' && !a.leaving) return true
+    for (const a of this.actors.values()) if ((a.dest === 'wait2' || (a.id === 'courier' && a.dest === 'door')) && !a.leaving) return true
     for (const a of this.actors.values()) {
       if (a.delay > 0 || a.t >= a.length) continue
       const p = this.at(a)

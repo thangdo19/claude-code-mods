@@ -2,7 +2,12 @@
 
 import { BigSim } from '../hooks/walk'
 import { addSec, EMPTY, setMood, startJob, startTurn, view, type View } from '../hooks/office'
+import { setClock } from '../hooks/world'
 import type { Office } from '../types'
+
+/** Tests see the same office whatever the real time: a June day at 10 (day sky, no lunch, no holiday). */
+export const TEST_CLOCK = { hour: 10, date: [2026, 6, 1] } as const
+setClock(TEST_CLOCK)
 
 export const sec = (o: Office, id: string, now: number, status: 'run' | 'done' | 'idle' = 'run') =>
   addSec(o, { id, name: 'Explore', task: 'find ' + id, short: 'grep ' + id, full: 'Grep ' + id, status, startedAt: now, endedAt: status === 'run' ? null : now, teammate: status === 'idle' })
