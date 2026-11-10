@@ -14,6 +14,11 @@
       "name": "usage-forecast",
       "source": "./usage-forecast",
       "description": "A live forecast of your context window, plus your session and weekly usage limits, in the band above the prompt."
+    },
+    {
+      "name": "pixel-office",
+      "source": "./pixel-office",
+      "description": "A pixel-art office in a pane beside your chat: you are the CEO, Claude is the Manager, and every tool call shows as a staff member doing the job."
     }
   ]
 }
