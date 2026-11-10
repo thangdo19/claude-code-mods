@@ -1,5 +1,4 @@
-// Bubbles (approved art): thought, picture and word bubbles, white with cut corners and a soft shadow; and the
-// napping Manager's "z z Z". Pure drawing.
+// Bubbles (approved art): thought, picture and word bubbles, white with cut corners and a soft shadow. Pure drawing.
 
 import { plain } from '../labels'
 import type { Tone } from '../office'
@@ -84,20 +83,6 @@ export function iconBubble(fb: FB, cx: number, bottom: number, icon: 'dots' | 'h
     return
   }
   ;(art[icon] ?? []).forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + 1 + i, y + 1 + j, ink[icon] ?? OUT)))
-}
-
-/** "z z Z" rising from the napping Manager: the big Z's top-left 2 px right of (x, y), the small z's under it. */
-export function zzz(fb: FB, x0: number, y0: number, f: number): void {
-  const small = ['####', '..#.', '.#..', '####']
-  const big = ['#####', '...#.', '..#..', '.#...', '#####']
-  const marks = [[0, 13, small], [1, 7, small], [2, 0, big]] as const
-  const n = 1 + (f % 3)
-  marks.slice(0, n).forEach(([dx, dy, g]) => {
-    const x = x0 + dx
-    const y = y0 + dy
-    g.forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + i + 1, y + j + 1, '#2b3550')))
-    g.forEach((r, j) => Array.from(r).forEach((ch, i) => ch === '#' && fb.s(x + i, y + j, '#ffffff')))
-  })
 }
 
 const BUBBLE_INK: Record<Tone, string> = { '': '#2a2230', idle: '#2a2230', warn: '#b45309', bad: '#c62828', good: '#1f7a3f' }

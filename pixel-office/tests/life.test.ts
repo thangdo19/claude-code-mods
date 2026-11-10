@@ -5,9 +5,9 @@ import { BigSim } from '../hooks/walk'
 import { REPORT_AFTER } from '../hooks/life'
 import { BOSS_BUBBLE } from '../hooks/layout'
 import { EMPTY, endJob, fitRows, lines, MIN_SHOW, NIGHT_MS, ROLES, setMood, startJob, startTurn, view, WHO } from '../hooks/office'
-import { remote } from '../hooks/world'
+import { remote, setClock } from '../hooks/world'
 
-import { run, sec, todoTurn } from './helpers'
+import { run, sec, TEST_CLOCK, todoTurn } from './helpers'
 
 const BREAK_SPOTS = ['coffee', 'chatA', 'chatB', 'chatC', 'chatD', 'plant', 'visitCourier', 'visitTypist']
 /** The staff who work in the office (the Researcher and the Librarian work from home: approved round 6). */
@@ -33,11 +33,27 @@ test('staff are in all day, take breaks, hurry to a job, and go home at night', 
   expect(sim.actors.has('researcher')).toBe(false)
   const bv = view(busy, 55_000)
   expect(lines(bv, sim.seated(), r => sim.doing(bv, r)).find(l => l.who === 'Leo · web')?.what).toBe('Web search: oauth (on a call)')
-  // Night: everyone walks out of the door; the Manager stays.
+  // Night (approved round 9): everyone walks out of the door, the Manager last ("Closing up" until then); then the
+  // lights are off.
   const night = { ...day, lastActivity: 1, moodAt: 1 }
-  run(sim, night, NIGHT_MS + 10, 200)
-  expect([...sim.actors.keys()]).toEqual(['manager'])
-  expect(sim.doing(view(night, NIGHT_MS + 40_000), 'librarian')).toBe('gone home')
+  let staffGone = -1
+  let bossLeft = -1
+  for (let i = 0; i < 200; i++) {
+    const nv = run(sim, night, NIGHT_MS + 10 + i * 125, 1)
+    if (i === 0) {
+      expect(sim.dark(nv)).toBe(false)
+      expect(lines(nv, sim.seated(), r => sim.doing(nv, r), undefined, sim.closing(nv))[0]?.what).toContain('Closing up')
+    }
+    if (staffGone < 0 && !STAFF.some(r => sim.actors.has(r))) staffGone = i
+    if (bossLeft < 0 && sim.actors.get('manager')?.leaving) bossLeft = i
+  }
+  expect(staffGone).toBeGreaterThan(0)
+  expect(bossLeft).toBeGreaterThanOrEqual(staffGone)
+  expect([...sim.actors.keys()]).toEqual([])
+  const nv = view(night, NIGHT_MS + 40_000)
+  expect(sim.dark(nv)).toBe(true)
+  expect(lines(nv, sim.seated(), r => sim.doing(nv, r), undefined, sim.closing(nv))[0]?.what).toContain('Gone home')
+  expect(sim.doing(nv, 'librarian')).toBe('gone home')
 })
 
 test('while Claude works the break is over: everyone at their own desk at work of their own, or in a huddle', async () => {
@@ -227,17 +243,40 @@ test('plan mode: the Manager calls everyone free to the board', async () => {
   expect(fitRows(ls, 40, 3).map(l => l.who + ': ' + l.what)).toEqual(['Claude · boss: Planning (plan mode)', 'Staff: all at the board'])
 })
 
-test('between turns the Manager is on a break; at night the Manager naps at the desk', async () => {
+test('between turns the Manager is on a break; at night the Manager goes home and hurries back when you type', async () => {
   const sim = new BigSim()
   const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
   run(sim, day, 2, 600)
   expect(sim.life.activity('manager')).not.toBe(null)
   run(sim, day, NIGHT_MS + 10, 200)
-  expect(sim.here('manager', 'chair')).toBe(true)
-  expect(view(day, NIGHT_MS + 30_000).line).toContain('Asleep')
-  // You type: the break is over at once.
-  run(sim, startTurn(day, NIGHT_MS + 40_000), NIGHT_MS + 40_000, 1)
+  expect(sim.actors.has('manager')).toBe(false)
+  expect(view(day, NIGHT_MS + 30_000).line).toContain('Gone home')
+  // You type: the lights are on at once, and the Manager hurries in to the desk.
+  const turn = startTurn(day, NIGHT_MS + 40_000)
+  const back = run(sim, turn, NIGHT_MS + 40_000, 1)
+  expect(sim.dark(back)).toBe(false)
   expect(sim.life.activity('manager')).toBe(null)
+  run(sim, turn, NIGHT_MS + 40_125, 24)
+  expect(sim.here('manager', 'chair')).toBe(true)
+  // A turn that ended on an error ("On hold") keeps the Manager at the desk all night, lights on.
+  const held = new BigSim()
+  const err = { ...day, mood: 'hold' as const, moodText: 'Stopped on an error' }
+  run(held, err, 2, 2)
+  const hv = run(held, err, NIGHT_MS + 10, 300)
+  expect([hv.night, held.here('manager', 'chair'), held.dark(hv)]).toEqual([true, true, false])
+  // A reload at night: nobody is put in the office, it is dark at once.
+  const again = new BigSim()
+  expect(again.dark(run(again, day, NIGHT_MS + 10, 2))).toBe(true)
+  // By the Christmas tree nobody waters the plant corner (round 9: they stood in the gifts).
+  setClock({ hour: 10, date: [2026, 12, 20] })
+  const xmas = new BigSim()
+  let watered = false
+  for (let i = 0; i < 2400; i++) {
+    run(xmas, day, 2 + i * 125, 1)
+    watered ||= [...xmas.actors.values()].some(a => a.dest === 'garden')
+  }
+  setClock(TEST_CLOCK)
+  expect(watered).toBe(false)
 })
 
 test('staff whose desks agents borrowed each stand somewhere of their own', async () => {

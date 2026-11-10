@@ -25,7 +25,8 @@ const CAT_WALK = [
   ['.......d.d', '.d.....ooo', 'd..ooooook', '..oooooo..', '...o.o.o..'],
 ]
 const CAT_SIT = ['d...d', 'ooooo', 'okoko', '.ono.', 'ooooo', 'ow.wo']
-const CAT_NAP = ['.d.d....', '.oooood.', 'okkooooo', 'oooooodo']
+/** 7 px, as wide as the windowsill (round 9: an 8 px one lost its back, its tail and its z past the office's edge). */
+const CAT_NAP = ['.d.d...', '.ooood.', 'okkoooo', 'ooooodo']
 
 /** The cat with its feet at (x, feet): walking (facing right or left), sitting, or napping (with z's). */
 export function cat(fb: FB, x: number, feet: number, pose: CatPose, right: boolean, step: number, f: number): void {
@@ -36,9 +37,10 @@ export function cat(fb: FB, x: number, feet: number, pose: CatPose, right: boole
     fb.s(x + 6, feet - 1 - ((f >> 2) % 2), CAT.d)
   } else {
     art(fb, x, feet - 3, CAT_NAP, CAT)
-    if ((f >> 1) % 3) fb.s(x + 7, feet - 1, CAT.d)
+    if ((f >> 1) % 3) fb.s(x + 6, feet - 1, CAT.d)
+    // Its z rises over the window.
     const z = f % 8
-    fb.s(x + 8 + (z >> 2), feet - 5 - (z >> 1), '#ffffff')
+    fb.s(x + 3 + (z >> 2), feet - 5 - (z >> 1), '#ffffff')
   }
 }
 
@@ -218,7 +220,7 @@ export function plane(fb: FB, x: number, y: number, right: boolean): void {
 export function gardenArt(fb: FB, dx: number, f: number, watering: boolean): void {
   fern(fb, dx)
   bush(fb, dx, f, false)
-  if (!watering) wateringCan(fb, dx + 6)
+  if (!watering) wateringCan(fb, dx + 5)
 }
 /** The plant corner's tall fern in its pot (desk 0 from x = dx). */
 export function fern(fb: FB, dx: number): void {
@@ -236,7 +238,10 @@ export function bush(fb: FB, dx: number, f: number, poinsettia: boolean): void {
   fb.r(dx + 11, 55, 5, 1, '#cf7a4a')
   fb.r(dx + 11, 60, 5, 1, P.shadow)
 }
-/** The watering can, waiting on the floor. */
+/**
+ * The watering can, waiting on the floor (round 9, "Metal can"): a spout up to the left, the body, a handle, in the
+ * metal of the cabinets' handles. (A 4 × 3 green one read as a blob.) In the hand it is `j` in people.ts.
+ */
 export function wateringCan(fb: FB, x: number): void {
-  art(fb, x, 59, ['.LL.', 'LLLL', 'LLL.'], { L: '#3fa37a' })
+  art(fb, x, 58, ['s....', '.sbbh', '..bBh', '..bB.'], { s: '#aeb8c4', b: '#d7dde4', B: '#b6c0cc', h: '#8a96a5' })
 }

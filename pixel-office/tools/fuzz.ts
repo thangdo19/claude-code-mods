@@ -33,6 +33,9 @@ const CLOSE = [['rep0', 'visitCourier', 'supCourier'], ['rep1', 'visitTypist', '
 const STUCK = 400
 /** After cleaning, this many ticks to walk back in. */
 const BACK_IN = 240
+/** Night (round 9): everyone out of the door within this many ticks; the Manager back at the desk within `BOSS_BACK`. */
+const NIGHT_OUT = 300
+const BOSS_BACK = 100
 
 const broken = new Map<string, string[]>()
 const fail = (rule: string, msg: string) => {
@@ -57,6 +60,10 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   let huddleAt = -1
   const huddling = new Set<string>()
   let catWalking = -1
+  let bossLeaving = false
+  let nightFor = 0
+  let dayAt = -1
+  let cleanedSince = false
   scenario({ ticks: TICKS, seed, draw: DRAW, clock: CLOCKS[(seed - 1) % CLOCKS.length], opening: seed % 2 === 1 }, t => {
     const { v, sim, i } = t
     const at = (m: string) => fail(m.split(':')[0]!, 'seed ' + seed + ' tick ' + i + ': ' + m)
@@ -67,6 +74,8 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     // Coverage.
     saw('mood ' + v.mood)
     if (v.night) saw('night')
+    if (sim.closing(v)) saw('night: closing up')
+    if (sim.dark(v)) saw('night: lights off')
     if (v.janitor) saw('cleaning')
     if (v.planning) saw('plan mode')
     if (v.frozen) saw('frozen (Esc)')
@@ -102,6 +111,28 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     if (v.mood === 'done' && /Done in ([2-9]|\d\d+)m/.test(v.line)) saw('party')
     if (sim.actors.get('courier')?.dest === 'door') saw('parcel at the door')
 
+    // Night (round 9): the Manager leaves only after the staff; soon nobody without a job is inside; when the night
+    // ends, the Manager is back at the desk soon (unless the Janitor came).
+    const boss = sim.actors.get('manager')
+    if (v.night && boss?.leaving && !bossLeaving && ROLES.some(r => sim.actors.has(r))) at('night: the Manager left before ' + ROLES.filter(r => sim.actors.has(r)).join(', '))
+    bossLeaving = !!boss?.leaving
+    if (nightFor > 0 && !v.night) {
+      dayAt = i
+      cleanedSince = false
+    }
+    // (A turn that ended on an error keeps the Manager at the desk, "On hold".)
+    nightFor = v.night && !v.janitor && v.mood === 'idle' ? nightFor + 1 : 0
+    if (nightFor === NIGHT_OUT) {
+      const still = inside.filter(a => a.id === 'manager' || ((ROLES as readonly string[]).includes(a.id) && !v.workers[a.id as (typeof ROLES)[number]]))
+      if (still.length) at('night: still inside after ' + NIGHT_OUT + ' ticks: ' + still.map(a => a.id).join(', '))
+      if (!still.length && !inside.length && !sim.dark(v)) at('night: empty but not dark')
+    }
+    if (v.janitor || v.night) cleanedSince ||= dayAt >= 0
+    if (dayAt >= 0 && i - dayAt === BOSS_BACK) {
+      if (!cleanedSince && !v.frozen && (!boss || boss.leaving)) at('night: the Manager not back ' + BOSS_BACK + ' ticks after it ended')
+      dayAt = -1
+    }
+    if (sim.dark(v) && inside.length) at('night: dark with ' + inside.map(a => a.id).join(', ') + ' inside')
     // Round 6: the Researcher and the Librarian work from home; agents only at desks 3 and 1.
     for (const r of REMOTE) if (sim.actors.has(r)) at('remote inside: ' + r + ' to ' + sim.actors.get(r)!.dest)
     const sd = sim.seated()
@@ -201,7 +232,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     const done = new Set((v.todos ?? []).filter(x => x.status === 'completed').map(x => x.text))
     for (const x of life.ticked) if (!done.has(x)) at('board: ticked "' + x + '" is not done')
     // The list: every staff member on exactly one line; fitRows within its rows, the Manager first, no row too wide.
-    const ls = lines(v, seated, r => sim.doing(v, r), id => sim.lookOf(id))
+    const ls = lines(v, seated, r => sim.doing(v, r), id => sim.lookOf(id), sim.closing(v))
     for (const r of ROLES) {
       const n = ls.filter(l => l.who === WHO[r]).length
       if (n !== 1) at('list: ' + WHO[r] + ' on ' + n + ' lines')

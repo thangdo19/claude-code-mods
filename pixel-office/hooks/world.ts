@@ -39,9 +39,9 @@ export type Holiday =
   | 'newyear' | 'mlk' | 'presidents' | 'valentine' | 'tet' | 'stpatrick' | 'easter' | 'memorial' | 'juneteenth' | 'july4' | 'labor'
   | 'halloween' | 'veterans' | 'thanksgiving' | 'christmas'
 export type Wall = 'halloween' | 'tet' | 'garland' | 'tinsel' | 'hearts' | 'shamrock' | 'eggs' | 'usa' | 'leaves'
-export type DeskDecor = 'pumpkin' | 'xmas' | 'tet' | 'flag' | 'juneteenth' | 'rose' | 'clover' | 'confetti' | 'leaf'
+export type DeskDecor = 'xmas' | 'tet' | 'flag' | 'juneteenth' | 'rose' | 'clover' | 'confetti' | 'leaf'
 /** On the floor of the plant corner (the Manager's desk has no room beside the hotline). */
-export type Floor = 'turkey' | 'basket' | 'gold'
+export type Floor = 'turkey' | 'basket' | 'gold' | 'pumpkin'
 /** What the office is dressed in on a date. */
 export type Decor = {
   /** The holiday on, if any (the Christmas season counts from Nov 1). */
@@ -64,15 +64,21 @@ export type Decor = {
   /** Easter: a bunny behind the bush and eggs by the pots. */
   eggs: boolean
   floor: Floor | null
+  /** December: snow lies on the windowsill, also under New Year's fireworks (round 9). */
+  snowy: boolean
 }
 
 const NO_DECOR: Decor = {
-  holiday: null, wall: null, desk: null, window: null, tree: 0, gifts: 0, wreath: false, stockings: false, poinsettia: false, hats: null, eggs: false, floor: null,
+  holiday: null, wall: null, desk: null, window: null, tree: 0, gifts: 0, wreath: false, stockings: false, poinsettia: false, hats: null, eggs: false, floor: null, snowy: false,
 }
 
-/** Lunar New Year (Tết), its first day [month, day], by year. */
+/**
+ * Tết, its first day [month, day], by year, by Vietnam's own calendar (UTC+7): 2030 is Feb 2 there, Feb 3 in China
+ * (round 9; worked out with Hồ Ngọc Đức's lunar calendar rules, which give every year here).
+ */
 const TET: Record<number, readonly [number, number]> = {
-  2026: [2, 17], 2027: [2, 6], 2028: [1, 26], 2029: [2, 13], 2030: [2, 3], 2031: [1, 23], 2032: [2, 11], 2033: [1, 31], 2034: [2, 19], 2035: [2, 8],
+  2026: [2, 17], 2027: [2, 6], 2028: [1, 26], 2029: [2, 13], 2030: [2, 2], 2031: [1, 23], 2032: [2, 11], 2033: [1, 31], 2034: [2, 19], 2035: [2, 8],
+  2036: [1, 28], 2037: [2, 15], 2038: [2, 4], 2039: [1, 24], 2040: [2, 12], 2041: [2, 1], 2042: [1, 22], 2043: [2, 10], 2044: [1, 30], 2045: [2, 17],
 }
 /** A date as a day number (days since 1970), so ranges cross months and years. */
 const dayNo = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 86_400_000
@@ -106,7 +112,8 @@ function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, number][
   const t = TET[y]
   if (t) on('tet', t[0], t[1], 7, 7)
   on('valentine', 2, 14, 4)
-  on('thanksgiving', 11, thanksgiving(y), 3, 1)
+  // (Monday to Thursday: on Friday the office is all Christmas, round 9.)
+  on('thanksgiving', 11, thanksgiving(y), 3)
   on('july4', 7, 4, 3)
   on('memorial', 5, lastWeekday(y, 5, 1), 2)
   on('presidents', 2, nthWeekday(y, 2, 1, 3), 2)
@@ -132,7 +139,8 @@ const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'des
   juneteenth: { wall: null, desk: 'juneteenth', window: null, floor: null },
   july4: { wall: 'usa', desk: 'flag', window: 'fireworks', floor: null },
   labor: { wall: 'usa', desk: 'flag', window: null, floor: null },
-  halloween: { wall: 'halloween', desk: 'pumpkin', window: null, floor: null },
+  // (The jack-o'-lantern stands in the plant corner: on the desk it sat on the hotline, round 9.)
+  halloween: { wall: 'halloween', desk: null, window: null, floor: 'pumpkin' },
   veterans: { wall: null, desk: 'flag', window: null, floor: null },
   thanksgiving: { wall: 'leaves', desk: 'leaf', window: null, floor: 'turkey' },
 }
@@ -142,7 +150,7 @@ const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'des
  * comes Nov 1, its lights Nov 8, a garland on the wall Nov 15, after Thanksgiving ornaments and a star, a wreath,
  * stockings, a poinsettia; in December snow in the window and a gift more every 6 days; Dec 24–25 every gift and Santa
  * hats; after that the tree stays up to New Year. A holiday on its days wins the wall, the desk and the window; the
- * tree stays.
+ * tree stays. On Feb 14 itself Valentine's wins over Tết (round 9).
  */
 export function decorAt(now: number): Decor {
   const d0 = new Date(now)
@@ -163,8 +171,10 @@ export function decorAt(now: number): Decor {
     if (stage >= 5) out.window = 'snow'
     if (stage === 5) out.gifts = Math.min(4, 1 + Math.floor((t - dec1) / 6))
     if (stage === 6) Object.assign(out, { gifts: 4, hats: 'santa' })
+    out.snowy = stage >= 5
   }
-  const today = holidaysOf(y).find(([, a, b]) => t >= a && t <= b)
+  const all = holidaysOf(y)
+  const today = (m === 2 && d === 14 ? all.find(([h]) => h === 'valentine') : undefined) ?? all.find(([, a, b]) => t >= a && t <= b)
   if (today) {
     const [h] = today
     const dd = DAY_DECOR[h]

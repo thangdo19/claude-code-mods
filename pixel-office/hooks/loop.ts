@@ -96,7 +96,7 @@ export async function onTick($: EngineInterface): Promise<void> {
     // every frame drawn. When it changed the whole pane is drawn again (ui.render), the picture with it: no
     // frame of our own then, it would be drawn twice.
     if (drawNow || rt.tick % 2 === 0) {
-      const all = lines(v, rt.sim.seated(), r => rt.sim.doing(v, r), id => rt.sim.lookOf(id))
+      const all = lines(v, rt.sim.seated(), r => rt.sim.doing(v, r), id => rt.sim.lookOf(id), rt.sim.closing(v))
       if (!sameList(all, rt.lastList)) {
         rt.lastList = all
         $.ui.invalidate('ui.render')

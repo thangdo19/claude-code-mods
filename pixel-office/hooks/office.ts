@@ -298,7 +298,7 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
   let tone: Tone = ''
   switch (mood) {
     case 'idle':
-      line = night ? 'Asleep · idle ' + Math.floor((now - o.lastActivity) / 60_000) + 'm' : 'On a break · back when you type'
+      line = night ? 'Gone home · idle ' + Math.floor((now - o.lastActivity) / 60_000) + 'm' : 'On a break · back when you type'
       tone = 'idle'
       break
     case 'think':
@@ -372,8 +372,12 @@ export function freeWords(v: View): string {
  * `seated` is the secretaries at desks in desk order; without it the first four are. `lookOf` gives an agent's
  * look in the picture, so their dot matches their clothes.
  */
-export function lines(v: View, seated?: readonly (string | null)[], doing?: (r: Role) => string, lookOf?: (id: string) => number | undefined): Line[] {
-  const out: Line[] = [{ dot: DOT.manager, who: WHO.manager, what: v.line, tone: v.tone, rank: 0, name: NAME.manager }]
+export function lines(
+  v: View, seated?: readonly (string | null)[], doing?: (r: Role) => string, lookOf?: (id: string) => number | undefined, closing = false,
+): Line[] {
+  // (Night with the Manager still in, `closing`: "Closing up" until the door shuts behind them.)
+  const boss = closing ? v.line.replace('Gone home', 'Closing up') : v.line
+  const out: Line[] = [{ dot: DOT.manager, who: WHO.manager, what: boss, tone: v.tone, rank: 0, name: NAME.manager }]
   for (const r of ROLES) {
     const w = v.workers[r]
     // Working from home (approved round 6): on a call while they have a job.

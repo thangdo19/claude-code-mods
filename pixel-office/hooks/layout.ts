@@ -29,12 +29,12 @@ export const FURNITURE = {
   /** The test lamp on the rack's face (approved round 6), below where the IT girl's bubble reaches. */
   testLamp: { x: 52, y: 11 },
   coffee: { x: 58, y: 13 },
-  /** The cat napping on the windowsill over the warm coffee machine: its left and its feet. */
-  catNap: { x: 58, y: 11 },
+  /** The cat napping on the windowsill over the warm coffee machine: its left and its feet (the sill is x 57–63). */
+  catNap: { x: 57, y: 11 },
   /** Two red lanterns on the wall at Tết (approved round 6). */
   lanterns: [{ x: 17, y: 1 }, { x: 47, y: 1 }],
-  /** The Christmas wreath on the door, under its window (approved round 7). */
-  wreath: { x: 4, y: 11 },
+  /** The Christmas wreath on the door, under its window (approved round 7); clear of the knob at x 8 (round 9). */
+  wreath: { x: 3, y: 11 },
   /** The printer on the floor by the coffee machine (approved round 6), above the Typist's chair. */
   printer: { x: 57, y: 24 },
   // The middle row: the Courier's desk, the Manager's, the Typist's.
@@ -51,12 +51,13 @@ export const FURNITURE = {
   plant: { x: 39, y: 32 },
   /** The party cake (approved round 6), on the Manager's desk. */
   cake: { x: 35, y: 32 },
-  /** Christmas stockings on the Manager's desk front (approved round 7): their left edges, and the row they hang from. */
-  stockings: { xs: [24, 36, 39], y: 40 },
+  /**
+   * Christmas stockings on the Manager's desk front (approved round 7): their left edges, and the row they hang from.
+   * Two, one each side of the MANAGER sign (round 9: three ran into the sign and each other).
+   */
+  stockings: { xs: [24, 38], y: 40 },
   typistDesk: { x: 49, y: 39, w: 15, h: 6 },
   typewriter: { x: 58, y: 39 },
-  /** The napping Manager's "z z Z", rising from here. */
-  zzz: { x: 37, y: 13 },
 } as const satisfies Record<string, Box | At | readonly Box[] | readonly At[] | { xs: readonly number[]; y: number }>
 
 /** The front desks (agents' and the front-desk staff's), one every 16 px from the left; each part from its desk's left. */
