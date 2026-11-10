@@ -7,6 +7,7 @@ import type { FB } from '../gfx/fb'
 import type { Decor, DeskDecor, Wall } from '../world'
 import { art, bush, fern, wateringCan } from './extras'
 import { P } from './palette'
+import { C } from '../gfx/color'
 
 const LIGHTS = ['#ff5050', '#ffd84a', '#5fb8ff', '#5ff08a']
 const CONF = ['#e04b4b', '#ffd84a', '#3a6fd6', '#2f9e57', '#ffffff', '#d787af', '#f08a24']
@@ -15,14 +16,20 @@ const CONF = ['#e04b4b', '#ffd84a', '#3a6fd6', '#2f9e57', '#ffffff', '#d787af', 
 
 /**
  * Along the top of the wall (rows 0–1; a few drops on row 2, clear of the board from x `board[0]` to `board[1]`),
- * never where `skip` says (the frame, the rack, the window). Tết adds its two lanterns.
+ * never where `skip` says (the frame, the rack, the window) nor where `hit` says something hangs (the clock). Tết adds
+ * its two lanterns. A shape goes up only where all of it fits (round 9: cut ones left half hearts and lone pixels);
+ * over the board, where only rows 0–1 are free, shapes sit a pixel higher.
  */
 export function wallDecor(
   fb: FB, kind: Wall, f: number, skip: (x: number) => boolean, board: readonly [number, number], lanterns: readonly { x: number; y: number }[],
+  hit: (x: number, y: number) => boolean,
 ): void {
+  const free = (x: number, y: number) => x >= 0 && x < fb.w && !skip(x) && !(y >= 2 && x >= board[0] - 1 && x <= board[1] + 1) && !hit(x, y)
   const px = (x: number, y: number, c: string) => {
-    if (x >= 0 && x < fb.w && !skip(x) && !(y >= 2 && x >= board[0] - 1 && x <= board[1] + 1)) fb.s(x, y, c)
+    if (free(x, y)) fb.s(x, y, c)
   }
+  const fits = (cells: readonly (readonly [number, number])[]) => cells.every(([a, b]) => free(a, b))
+  const up = (x0: number, x1: number) => (x1 >= board[0] - 1 && x0 <= board[1] + 1 ? 1 : 0)
   const w = fb.w
   switch (kind) {
     case 'halloween':
@@ -38,23 +45,26 @@ export function wallDecor(
     case 'tet':
       // A red string with gold beads and two red lanterns (approved round 6).
       for (let x = 0; x < w; x++) px(x, 0, '#c62828')
-      for (let x = 1; x < w - 1; x += 3) if (!skip(x + 1) && Math.floor(x / 3) % 2) px(x, 1, '#e8c25a')
+      // (No bead right by a lantern's cap.)
+      for (let x = 1; x < w - 1; x += 3) if (!skip(x + 1) && Math.floor(x / 3) % 2 && !lanterns.some(l => Math.abs(x - (l.x + 1)) <= 2)) px(x, 1, '#e8c25a')
       for (const { x: lx, y: ly } of lanterns) {
         if (skip(lx)) continue
         art(fb, lx, ly, ['.g.', 'rrr', (f >> 2) % 2 ? 'rRr' : 'rrr', 'rrr', '.g.'], { g: '#e8c25a', r: '#d62828', R: '#ff6b5a' })
       }
       break
     case 'garland':
-      // A fir garland with a light every 3 px (low and high in turn), blinking, and a red bow every 16 px.
+      // A fir garland with a light every 3 px (low and high in turn; all high over the board), blinking, and red bows.
       for (let x = 0; x < w; x++) {
         px(x, 0, x % 2 ? '#2f6b3a' : '#3f8f4c')
         px(x, 1, x % 3 === 1 ? '#3f8f4c' : '#2f6b3a')
       }
       for (let x = 1; x < w; x += 3) {
         const k = (x / 3) | 0
-        px(x, 1 + (k % 2), (k + (f >> 1)) % 3 ? LIGHTS[k % 4]! : '#3b414d')
+        const row = 1 + (k % 2)
+        px(x, free(x, row) ? row : 1, (k + (f >> 1)) % 3 ? LIGHTS[k % 4]! : '#3b414d')
       }
-      for (let x = 7; x < w; x += 16) {
+      for (const x of [7, 19, 39]) {
+        if (!fits([[x - 1, 0], [x + 1, 0], [x, 1]])) continue
         px(x - 1, 0, '#d63a3a')
         px(x + 1, 0, '#d63a3a')
         px(x, 1, '#a82a2a')
@@ -72,18 +82,22 @@ export function wallDecor(
       for (let x = 0; x < w; x++) px(x, 0, '#c94f6d')
       for (let x = 1; x < w - 2; x += 5) {
         const c = ((x / 5) | 0) % 2 ? '#ff8fb1' : '#e04b6b'
-        for (const [a, b] of [[0, 1], [1, 1], [2, 1], [1, 2]] as const) px(x + a, b, c)
+        const u = up(x, x + 2)
+        const cells = ([[0, 1], [1, 1], [2, 1], [1, 2]] as const).map(([a, b]) => [x + a, b - u] as const)
+        if (fits(cells)) for (const [a, b] of cells) px(a, b, c)
       }
       break
     case 'shamrock':
       // Shamrocks with a gold coin between, twinkling.
       for (let x = 0; x < w; x++) px(x, 0, '#2f7d44')
       for (let x = 1; x < w - 2; x += 5) {
-        px(x, 1, '#3fae5a')
-        px(x + 2, 1, '#3fae5a')
-        px(x + 1, 1, '#2f8a48')
-        px(x + 1, 2, '#2f8a48')
-        px(x + 3, 1, (x + (f >> 1)) % 4 ? '#e8c25a' : '#fff3c4')
+        const u = up(x, x + 2)
+        if (!fits([[x, 1 - u], [x + 1, 1 - u], [x + 2, 1 - u], [x + 1, 2 - u]])) continue
+        px(x, 1 - u, '#3fae5a')
+        px(x + 2, 1 - u, '#3fae5a')
+        px(x + 1, 1 - u, '#2f8a48')
+        px(x + 1, 2 - u, '#2f8a48')
+        if (!u) px(x + 3, 1, (x + (f >> 1)) % 4 ? '#e8c25a' : '#fff3c4')
       }
       break
     case 'eggs': {
@@ -91,7 +105,9 @@ export function wallDecor(
       for (let x = 0; x < w; x++) px(x, 0, '#c9ced6')
       for (let x = 1; x < w - 1; x += 4) {
         const c = pastel[((x / 4) | 0) % pastel.length]!
-        for (const [a, b] of [[0, 1], [1, 1], [0, 2], [1, 2]] as const) px(x + a, b, c)
+        const u = up(x, x + 1)
+        const cells = ([[0, 1], [1, 1], [0, 2], [1, 2]] as const).map(([a, b]) => [x + a, b - u] as const)
+        if (fits(cells)) for (const [a, b] of cells) px(a, b, c)
       }
       break
     }
@@ -102,6 +118,7 @@ export function wallDecor(
         px(x, 1, (x >> 1) % 2 ? '#ffffff' : '#d63a3a')
       }
       for (let x = 2; x < w; x += 6) {
+        if (!fits([[x, 2], [x + 1, 2], [x + 2, 2]])) continue
         px(x, 2, '#d63a3a')
         px(x + 1, 2, '#ffffff')
         px(x + 2, 2, '#d63a3a')
@@ -124,15 +141,14 @@ export function wallDecor(
 
 /** By the plant on the Manager's desk (the plant's top-left at x, y). */
 export function deskDecor(fb: FB, x: number, y: number, kind: DeskDecor, f: number): void {
+  // A flag planted in the pot, flying left over the desk (round 9: right of the pot it hung in the air over the aisle,
+  // on the Typist's hair and over whoever stood there).
   const flag = (rows: string[]) => {
-    fb.r(x + 5, y - 2, 1, 6, '#8d97a5')
-    art(fb, x + 6, y - 2, rows, { B: '#2c4a9a', r: '#d63a3a', w: '#ffffff' })
+    const top = y - 1 - rows.length
+    fb.r(x + 3, top, 1, y + 4 - top, '#8d97a5')
+    art(fb, x - 2, top, rows, { B: '#2c4a9a', r: '#d63a3a', w: '#ffffff' }, true)
   }
   switch (kind) {
-    case 'pumpkin':
-      // A jack-o'-lantern by the plant (approved round 6).
-      art(fb, x - 4, y + 3, ['..g..', '.ooo.', 'oyoyo', 'ooooo'], { o: '#f08a24', g: '#2f7d44', y: f % 2 ? '#ffd23f' : '#f2b33d' })
-      break
     case 'xmas':
       // A star and lights on the plant (approved round 6).
       fb.s(x + 2, y - 1, '#ffd84a')
@@ -152,8 +168,8 @@ export function deskDecor(fb: FB, x: number, y: number, kind: DeskDecor, f: numb
       flag(['BBBBB', 'BBwBB', 'rwwwr', 'rrrrr'])
       break
     case 'rose':
+      // A rose on the plant. (Round 9, "rose only": its heart was drawn on the hotline.)
       art(fb, x + 1, y - 1, ['.r.', 'rRr'], { r: '#e04b6b', R: '#a8243f' })
-      art(fb, x - 4, y + 3, ['p.p', 'ppp', '.p.'], { p: (f >> 2) % 2 ? '#ff8fb1' : '#e04b6b' })
       break
     case 'clover':
       art(fb, x + 1, y - 2, ['g.g', '.g.', '.d.'], { g: '#3fae5a', d: '#2f7d44' })
@@ -169,19 +185,27 @@ export function deskDecor(fb: FB, x: number, y: number, kind: DeskDecor, f: numb
   }
 }
 
-/** Three stockings hanging on the Manager's desk front, at `xs` from row `y`. */
+/** Stockings hanging on the Manager's desk front, at `xs` from row `y`. */
 export function stockings(fb: FB, xs: readonly number[], y: number): void {
   xs.forEach((sx, i) => art(fb, sx, y, ['ww.', 'cc.', 'cc.', 'ccc'], { w: '#f4f6f8', c: i % 2 ? '#2f8a4a' : '#d63a3a' }))
 }
 
 /* ===== the window, the door ===== */
 
-/** Over the window's panes (its frame at x, y, w × h): falling snow (snow on the sill), fireworks, a rainbow. */
+/**
+ * Over the window's panes (its frame at x, y, w × h): falling snow (snow on the sill), fireworks, a rainbow. The
+ * crossbar stays whole, and no flake falls over the sun or the moon (round 9).
+ */
 export function windowFx(fb: FB, x: number, y: number, w: number, h: number, kind: 'snow' | 'fireworks' | 'rainbow', f: number): void {
   const ix = x + 1, iy = y + 1, iw = w - 2, ih = h - 2
   fb.clip = [ix, iy, ix + iw - 1, iy + ih - 1]
   if (kind === 'snow') {
-    for (let i = 0; i < 6; i++) fb.s(ix + ((i * 3 + (f >> 2)) % iw), iy + ((f + i * 3) % ih), '#ffffff')
+    for (let i = 0; i < 6; i++) {
+      const sx = ix + ((i * 3 + (f >> 2)) % iw)
+      const sy = iy + ((f + i * 3) % ih)
+      const under = fb.p[sy * fb.w + sx]
+      if (under !== SUN && under !== MOON) fb.s(sx, sy, '#ffffff')
+    }
     fb.r(ix, iy + ih - 1, iw, 1, '#f4f8fc')
   } else if (kind === 'fireworks') {
     // A burst grows in the top pane, then in the bottom one.
@@ -198,7 +222,14 @@ export function windowFx(fb: FB, x: number, y: number, w: number, h: number, kin
     for (let k = 0; k < bands.length; k++) for (let j = 0; j < iw; j++) fb.s(ix + j, iy + ih - 1 - k - (j === 0 || j === iw - 1 ? 0 : 1), bands[k]!)
   }
   fb.clip = null
-  if (kind === 'snow') fb.r(x - 1, y + h, w + 2, 1, '#f4f8fc')
+  fb.r(x, y + Math.floor(h / 2), w, 1, '#eef1f4')
+  if (kind === 'snow') sillSnow(fb, x, y, w, h)
+}
+const SUN = C('#ffd23f')
+const MOON = C(P.moon)
+/** Snow lying on the windowsill (all December; it stays under New Year's fireworks: round 9). */
+export function sillSnow(fb: FB, x: number, y: number, w: number, h: number): void {
+  fb.r(x - 1, y + h, w + 2, 1, '#f4f8fc')
 }
 
 /** A wreath on the closed door, its top-left at (x, y). */
@@ -233,9 +264,9 @@ const GIFTS: readonly (readonly [number, number, number, number, string, string]
 
 /**
  * The plant corner dressed for the season (desk 0, from x = dx; approved round 7): the fir in place of the fern (bare,
- * with lights, with ornaments and a star), the bush as a poinsettia, gifts under the tree; a turkey, an Easter basket
- * or a pot of gold between the pots; at Easter a bunny behind the bush and eggs by the pots. The watering can waits
- * on the floor when nothing stands there.
+ * with lights, with ornaments and a star), the bush as a poinsettia, gifts under the tree; a turkey, an Easter basket,
+ * a pot of gold or the jack-o'-lantern between the pots; at Easter a bunny peeking over the bush from behind it and
+ * eggs on the floor in front of its pot. The watering can waits on the floor when nothing stands there.
  */
 export function plantCorner(fb: FB, dx: number, f: number, watering: boolean, d: Decor): void {
   if (d.tree) {
@@ -250,9 +281,12 @@ export function plantCorner(fb: FB, dx: number, f: number, watering: boolean, d:
       })
     if (d.tree >= 3) {
       for (const [a, b, c] of ORNAMENTS) fb.s(dx + a, b, c)
-      art(fb, dx + 3, 41, ['.z.', 'zZz'], { z: '#ffd84a', Z: f % 2 ? '#ffffff' : '#fff3c4' })
+      // (A pale star: a gold one ran into the brass MAIL sign beside it, round 9.)
+      art(fb, dx + 3, 41, ['.z.', 'zZz'], { z: '#fffbe6', Z: f % 2 ? '#ffffff' : '#ffe27a' })
     }
   } else fern(fb, dx)
+  // (Before the bush, so the bush hides its chin.)
+  if (d.eggs) art(fb, dx + 11, 45, ['.w.w.', '.w.w.', 'wwwww', 'wkwkw', '.wnw.'], { w: '#f4f6f8', k: '#2a2230', n: '#ff8fb1' })
   bush(fb, dx, f, d.poinsettia)
   for (const [a, b, gw, gh, c, rb] of GIFTS.slice(0, d.gifts)) {
     fb.r(dx + a, b, gw, gh, c)
@@ -269,9 +303,9 @@ export function plantCorner(fb: FB, dx: number, f: number, watering: boolean, d:
     art(fb, dx + 6, 57, ['.zZz.', 'zZzZz', 'kkkkk', '.kkk.'], { z: '#ffd84a', Z: '#e8c25a', k: '#2a2a30' })
     if ((f >> 1) % 4 === 0) fb.s(dx + 8, 56, '#ffffff')
   }
-  if (d.eggs) {
-    art(fb, dx + 13, 44, ['.w.w.', '.w.w.', 'wwwww', 'wkwkw', '.wnw.'], { w: '#f4f6f8', k: '#2a2230', n: '#ff8fb1' })
-    for (const [a, c] of [[0, '#ffb3c8'], [5, '#a8d8ff']] as const) fb.r(dx + a, 60, 2, 1, c)
-  }
-  if (!watering && !d.gifts && !d.floor) wateringCan(fb, dx + (d.tree ? 7 : 6))
+  else if (d.floor === 'pumpkin')
+    // A jack-o'-lantern (approved round 6; on the floor here since round 9).
+    art(fb, dx + 6, 58, ['..g..', '.ooo.', 'oyoyo', 'ooooo'], { o: '#f08a24', g: '#2f7d44', y: f % 2 ? '#ffd23f' : '#f2b33d' })
+  if (d.eggs) for (const [a, c] of [[11, '#ffb3c8'], [14, '#a8d8ff']] as const) fb.r(dx + a, 61, 2, 1, c)
+  if (!watering && !d.gifts && !d.floor) wateringCan(fb, dx + 5)
 }

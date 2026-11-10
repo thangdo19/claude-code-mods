@@ -98,7 +98,7 @@ export function pane(on: On): void {
     // A new pane: the camera starts where it should be looking.
     if (shape?.kind === 'cam') rt.camera.step(v, shape.cols, shape.rows * 2, rt.sim)
     // Everyone has their own line (approved round 4); with no picture, the staff with no job say where they are.
-    const all = lines(v, shape ? rt.sim.seated() : undefined, shape ? r => rt.sim.doing(v, r) : undefined, shape ? id => rt.sim.lookOf(id) : undefined)
+    const all = lines(v, shape ? rt.sim.seated() : undefined, shape ? r => rt.sim.doing(v, r) : undefined, shape ? id => rt.sim.lookOf(id) : undefined, !!shape && rt.sim.closing(v))
     rt.lastList = all
     const beside = shape?.kind === 'cam' && shape.beside
     // The list's own width (beside the camera: what the camera and the gap leave); long lines wrap within it.

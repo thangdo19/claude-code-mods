@@ -355,6 +355,15 @@ export class BigSim {
     if (i >= 0) this.desks[i] = null
   }
 
+  /** Night, and the last one is out of the door (approved round 9): the lights are off. Nobody is inside then. */
+  dark(v: View): boolean {
+    return v.night && this.actors.size === 0
+  }
+  /** Night, the Manager still in: closing up. */
+  closing(v: View): boolean {
+    return v.night && this.actors.has('manager')
+  }
+
   walking(): boolean {
     for (const a of this.actors.values()) if (a.delay > 0 || a.t < a.length) return true
     return false

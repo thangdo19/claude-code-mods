@@ -10,7 +10,7 @@ import type { ActorId, BigSim } from './walk'
 import { among, PATROL_SPOTS, REPORT_SPOTS, SUP_SPOTS, type SpotId } from './layout'
 import { isMeeting, isUrgent, isWork } from './moods'
 import { LINGER_MS, MIN_SHOW, NAME, ROLES, type View } from './office'
-import { lunchAt, remote, REMOTE } from './world'
+import { decorAt, lunchAt, remote, REMOTE } from './world'
 
 /** A small picture bubble: not working (words in a bubble mean working). */
 export type Icon = 'dots' | 'ha' | 'heart' | 'note' | 'bang' | 'ask' | 'check' | 'bulb'
@@ -154,6 +154,8 @@ export class Life {
   private readonly held = new Map<Who, number>()
   /** The Manager stepped out (the Janitor cleans): walks back in rather than appearing. */
   private managerOut = false
+  /** The Manager went home for the night (approved round 9): hurries back in through the door. */
+  private managerHome = false
   /** To-do lines the Manager has ticked on the board, and done lines still to tick (in order). */
   readonly ticked = new Set<string>()
   pending: string[] = []
@@ -194,13 +196,22 @@ export class Life {
   private lapOut = false
 
   /**
-   * Who is in the office: staff come for the workday, go home at night; the Manager is always in. `opening`: the
-   * first sync of a new session, everyone walks in from the door, the Manager first.
+   * Who is in the office: staff come for the workday and go home at night; the Manager goes last, once every staff
+   * member is out of the door (approved round 9; the lights go off then: `BigSim.dark`), and hurries back in when
+   * something happens. A turn that ended on an error ("On hold") keeps the Manager in, lights on. `opening`: the first sync of a new session, everyone walks in from the door, the Manager first.
    */
   sync(sim: BigSim, v: View, instant: boolean, opening = false): void {
     const out = cleaning(v)
     const m = sim.actors.get('manager')
-    if (out) {
+    // (Only with nothing left to tell you: "On hold" after an error keeps the Manager at the desk, on the hotline.)
+    const closing = v.night && !out && v.mood === 'idle'
+    if (closing) {
+      if (m && !m.leaving && !ROLES.some(r => sim.actors.has(r))) {
+        this.endAct('manager')
+        sim.goTo('manager', 'door', { leaving: true })
+      }
+      if (!m || sim.actors.get('manager')?.leaving) this.managerHome = true
+    } else if (out) {
       // The Janitor cleans: the Manager steps out too.
       if (m && !m.leaving) {
         this.endAct('manager')
@@ -209,7 +220,7 @@ export class Life {
       }
       this.managerOut = true
     } else if (!m) {
-      sim.goTo('manager', meeting(v) ? 'board' : 'chair', opening || (this.managerOut && !instant) ? {} : { instant: true })
+      sim.goTo('manager', meeting(v) ? 'board' : 'chair', this.managerHome && !instant ? { hurry: true } : opening || (this.managerOut && !instant) ? {} : { instant: true })
       this.managerOut = false
     } else if (m.leaving) {
       // Done before the Manager was out of the door: back in.
@@ -233,6 +244,7 @@ export class Life {
         else sim.goTo(r, 'door', { leaving: true, delay: 6 * k++ })
       }
     }
+    if (!closing) this.managerHome = false
   }
 
   step(sim: BigSim, v: View): void {
@@ -571,7 +583,9 @@ export class Life {
     // Lunch around noon (approved round 6, "Real time of day"): a sandwich at the desk.
     if (homeOk && lunchAt(v.now) && prev?.kind !== 'eat') options.push([5, () => this.start(sim, r, 'eat', home, this.between(120, 200))])
     // The plant corner at the first front desk (approved round 6): water its plants.
-    if (free1('garden') && prev?.kind !== 'garden') options.push([2, () => this.start(sim, r, 'garden', 'garden', this.between(32, 48))])
+    // (Not by the fir or a holiday thing on the floor, round 9: they stood in the gifts, the can inside the tree.)
+    const deco = decorAt(v.now)
+    if (free1('garden') && prev?.kind !== 'garden' && !deco.tree && !deco.gifts && !deco.floor) options.push([2, () => this.start(sim, r, 'garden', 'garden', this.between(32, 48))])
     if (free1('plant')) options.push([1, () => this.start(sim, r, 'plant', 'plant', this.between(48, 80))])
     const pair = CHATS.find(([a, b]) => free1(a) && free1(b))
     if (pair && idle.length)

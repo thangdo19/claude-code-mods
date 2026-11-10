@@ -190,7 +190,7 @@ export function scenario(opt: Options, each: (t: Tick) => void): void {
     cam.step(v, 64, 32, sim)
     camSmall.step(v, 40, 24, sim)
     const full = renderBig(v, sim, i >> 1, i, viewing)
-    const ls = lines(v, sim.seated(), r => sim.doing(v, r), id => sim.lookOf(id))
+    const ls = lines(v, sim.seated(), r => sim.doing(v, r), id => sim.lookOf(id), sim.closing(v))
     const list = [fitRows(ls, 64, 40), fitRows(ls, 40, 12), fitRows(ls, 30, 4)]
       .map(rows => rows.map(l => l.dot + '|' + l.who + '|' + l.what + '|' + l.tone).join('\n'))
       .join('\n--\n')

@@ -5,7 +5,7 @@
 import type { Role, Sec } from '../types'
 import { still, Scene } from './gfx/fb'
 import { board, boardWords, type BoardItem } from './art/board'
-import { iconBubble, textBubble, thinkBubble, zzz } from './art/bubbles'
+import { iconBubble, textBubble, thinkBubble } from './art/bubbles'
 import {
   bossChair, cabinet, clock, coffeeMachine, desk, deskPhone, door, globe, monitor, nameplate, officeChair, plant, plate, rack, room, typewriter,
   waterCooler,
@@ -17,7 +17,9 @@ import { NAME, ROLES, type Tone, type View } from './office'
 import { agentOf, isRole, secActor, type BigSim } from './walk'
 import { decorAt, DESK_KIND, DESK_OWNER, remote, skyAt } from './world'
 import { cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, printer, skyPane, starFrame, testLamp } from './art/extras'
-import { deskDecor, plantCorner, stockings, wallDecor, windowFx, wreath } from './art/holidays'
+import { deskDecor, plantCorner, sillSnow, stockings, wallDecor, windowFx, wreath } from './art/holidays'
+import { lightsOff } from './art/night'
+import { C } from './gfx/color'
 import { HOME, managerFree, meeting, SUP, type ActKind, type Icon, type Who } from './life'
 import { isUrgent, isWork } from './moods'
 import {
@@ -104,17 +106,20 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   still(fb, 'room', room)
   const open = sim.doorOpen()
   still(fb, 'door ' + open, f => door(f, U.door.x, U.door.y, U.door.w, U.door.h, open))
-  // Holiday decorations (approved rounds 6 and 7): along the top of the wall, never over the frame, the rack or the
-  // window; a wreath on the closed door; holiday hats on everyone but the Janitor.
+  // Holiday decorations (approved rounds 6 and 7): along the top of the wall, never over the frame, the rack, the
+  // window or the clock's round face; a wreath on the closed door; holiday hats on everyone but the Janitor.
   const deco = decorAt(v.now)
   const fr = U.frame
   if (deco.wall)
     wallDecor(
       fb, deco.wall, F, x => (x >= fr.x - 1 && x <= fr.x + fr.w) || (x >= U.rack.x && x < U.rack.x + U.rack.w) || x >= U.window.x - 1,
       [U.board.x, U.board.x + U.board.w - 1], U.lanterns,
+      (x, y) => y >= U.clock.y && x >= U.clock.x && x <= U.clock.x + 4 && !(y === U.clock.y && (x === U.clock.x || x === U.clock.x + 4)),
     )
   if (deco.wreath && !open) wreath(fb, U.wreath.x, U.wreath.y)
   const hat = deco.hats ?? undefined
+  /** A picture bubble sits above a holiday hat, not on it (round 9). */
+  const lift = hat === 'party' ? 3 : hat ? 2 : 0
   clock(fb, U.clock.x, U.clock.y, F)
   // Employee of the month (approved round 6): whoever had the most jobs since the office opened.
   let star: Role | null = null
@@ -136,6 +141,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   // The window by the time of day (approved round 6); night after 10 idle minutes still wins.
   skyPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, v.night ? 'night' : skyAt(v.now), F)
   if (deco.window) windowFx(fb, U.window.x, U.window.y, U.window.w, U.window.h, deco.window, F)
+  if (deco.snowy && deco.window !== 'snow') sillSnow(fb, U.window.x, U.window.y, U.window.w, U.window.h)
   // Thinking at the board (approved round 6, "Many ways to think"): doodles, more the longer the Manager stays.
   if (!meeting(v) && !items.length && v.mood === 'think' && sim.here('manager', 'board')) {
     const m = sim.actors.get('manager')!
@@ -291,11 +297,13 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const thoughts: [number, number][] = []
 
   for (const a of sim.actors.values()) {
-    if (a.delay > 0) continue
+    // Waiting a moment outside before coming in: not in the picture yet. Waiting their turn to walk out (night, the
+    // Janitor): still standing where they were (round 9: they blinked out for up to 3 s).
+    if (a.delay > 0 && !a.leaving) continue
     const spot = SPOTS[a.dest]
     const here = a.arrivedAt >= 0 && !a.leaving
     const [px, py] = sim.at(a)
-    const walking = !here
+    const walking = !here && a.delay <= 0
     const sitting = here && spot.seat
     const feet = sitting ? spot.feet : py
     const top = feet - 12
@@ -312,7 +320,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     if (a.id === 'manager') {
       lk = LOOK.manager
       const seat = here && a.dest === 'chair'
-      const napping = v.mood === 'idle' && v.night && seat
+      // Night (approved round 9): sitting up until the staff are out of the door, then home too.
+      const closing = v.mood === 'idle' && v.night && seat
       const act = managerFree(v) ? life.activity('manager') : null
       if (act) {
         arms = BREAK_ARMS[act]
@@ -328,8 +337,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         if (v.mood === 'permission' || v.mood === 'ask' || v.mood === 'hold') arms = 'deskPhone'
       }
       if (party) arms = 'up'
-      if (napping) arms = 'sleep'
-      eyes = napping ? 'closed' : undefined
+      if (closing) arms = 'down'
       smile ||= v.mood === 'done' || (seat && REPORT_SPOTS.some(hereAt))
       const key = seat ? DEPTH.bossSeat : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
@@ -337,8 +345,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager'), hat }))
       const b = MANAGER_BUBBLE[v.mood]
       if (seat) {
-        if (napping) at(DEPTH.top, () => zzz(fb, FURNITURE.zzz.x, FURNITURE.zzz.y, F))
-        else if (act) {
+        if (act) {
           /* on a break at the desk: no bubble */
         }
         // The lightbulb (approved round 6): the Manager calls whoever gets the job, by name (round 8).
@@ -353,7 +360,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         else if (life.think > 0 && top >= 10) thoughts.push([px + 6, top - 10])
       }
       const ic = here ? life.icon(sim, v, 'manager') : null
-      if (ic) icons.push([px + (act ? 3 : 5), top - 1, ic])
+      if (ic) icons.push([px + (act ? 3 : 5), top - 1 - lift, ic])
       continue
     }
 
@@ -426,7 +433,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         onCall = true
       }
       const ic = here ? life.icon(sim, v, role) : null
-      if (ic) icons.push([px + 3, top - 1, ic])
+      if (ic) icons.push([px + 3, top - 1 - lift, ic])
     } else continue
 
     if (a.leaving) bubble = null
@@ -471,8 +478,41 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   }
   for (const [cx, row, words, tone, minX] of bubbles) textBubble(sc, cx, row, words, tone, minX)
   sc.settle()
+  // Everyone has gone home (approved round 9): the lights are off, what glows stays lit.
+  if (sim.dark(v)) {
+    const W = U.window
+    const R = U.rack
+    lightsOff(
+      sc,
+      (x, y, c) =>
+        (x > W.x && x < W.x + W.w - 1 && y > W.y && y < W.y + W.h - 1 && !CAT_INK.has(c) && c !== WINDOW_FRAME) ||
+        (x >= R.x && x < R.x + R.w && y >= R.y && y < R.y + R.h && LED_INK.has(c)) ||
+        (y <= 2 && deco.wall === 'garland' && LIGHT_INK.has(c)) ||
+        (deco.tree >= 2 && x <= 8 && y >= 41 && y <= 54 && LIGHT_INK.has(c)) ||
+        (deco.desk === 'xmas' && x >= U.plant.x && x <= U.plant.x + 4 && y >= U.plant.y - 1 && y <= U.plant.y + 3 && LIGHT_INK.has(c)) ||
+        (x === U.coffee.x + 4 && y === U.coffee.y + 1) ||
+        (x === U.printer.x + 5 && y === U.printer.y + 1),
+      // Moonlight through the two panes, slanting down to the left across the floor.
+      (x, y) => {
+        const k = y - MOON_AT.y
+        return k >= 0 && k <= 10 && k !== 5 && x <= MOON_AT.x - k && x >= MOON_AT.x - 4 - k
+      },
+    )
+  }
   return sc
 }
+/** In the dark: the colors that glow where they are (the cat on the sill does not; the window's frame does not). */
+const CAT_INK = new Set(['#f0a050', '#c06a2a', '#2a2230', '#f08aa0', '#fff1e0'].map(C))
+const WINDOW_FRAME = C('#eef1f4')
+/** The rack's lights and the test lamp. */
+const LED_INK = new Set(['#3fd273', '#e04b4b', '#f2b33d', '#5ff08a', '#ff5050', '#ffc94a', '#c8ffd8', '#ffc8c8', '#fff0b8'].map(C))
+/**
+ * Christmas lights and the star. (Not the ornaments: their red is the clock's second hand too, their gold the brass
+ * of the MAIL sign behind the tree, which would glow with them.)
+ */
+const LIGHT_INK = new Set(['#ff5050', '#ffd84a', '#5fb8ff', '#5ff08a', '#ffffff', '#fffbe6', '#ffe27a'].map(C))
+/** Where the moonlight lands: the right end of its top row on the floor. */
+const MOON_AT = { x: 56, y: 22 }
 
 const secBubble = (s: Sec): [string, Tone] =>
   s.status === 'run' ? [s.short, ''] : s.status === 'done' ? ['Done!', 'good'] : s.status === 'fail' ? ['Stopped', 'bad'] : ['waiting', 'warn']

@@ -332,9 +332,10 @@ function person(
         // A watering can held out to the left, a drop falling.
         del(0, 8)
         put(0, 6, 's')
-        for (const [a, b] of [[-3, 6], [-2, 6], [-1, 6], [-3, 7], [-2, 7], [-1, 7]] as const) put(a, b, 'L')
-        put(-4, 5, 'L')
-        put(-5, 4, 'L')
+        // (Metal, as the can on the floor: round 9.)
+        for (const [a, b] of [[-3, 6], [-2, 6], [-1, 6], [-3, 7], [-2, 7], [-1, 7]] as const) put(a, b, 'j')
+        put(-4, 5, 'j')
+        put(-5, 4, 'j')
         put(-5, 5 + 1 + (f % 2), 'D')
         if (f % 2) put(-6, 8, 'D')
         break
@@ -615,7 +616,7 @@ function hat(kind: 'santa' | 'party', side: boolean, put: Put): void {
   }
   for (let i = 1; i <= 5; i++) put(i, 0, 'w')
   const cone = side
-    ? ([[2, -1, 'u'], [3, -1, 'u'], [4, -1, 'U'], [1, -2, 'u'], [2, -2, 'u'], [3, -2, 'U'], [0, -2, 'w'], [0, -1, 'w']] as const)
+    ? ([[1, -1, 'u'], [2, -1, 'u'], [3, -1, 'u'], [4, -1, 'U'], [1, -2, 'u'], [2, -2, 'u'], [3, -2, 'U'], [0, -2, 'w'], [0, -1, 'w']] as const)
     : ([[2, -1, 'u'], [3, -1, 'u'], [4, -1, 'u'], [5, -1, 'U'], [3, -2, 'u'], [4, -2, 'u'], [5, -2, 'U'], [6, -2, 'w'], [6, -1, 'w']] as const)
   for (const [a, b, ch] of cone) put(a, b, ch)
 }

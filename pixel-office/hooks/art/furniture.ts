@@ -156,7 +156,8 @@ export function bossChair(fb: FB, x: number, y: number): void {
 }
 export function plant(fb: FB, x: number, y: number): void {
   fb.r(x + 1, y + 4, 3, 3, P.pot)
-  fb.r(x, y + 4, 5, 1, '#cf7a4a')
+  // (The rim as wide as the pot, like the plant corner's pots: a wider one went under the hotline and past the desk's end.)
+  fb.r(x + 1, y + 4, 3, 1, '#cf7a4a')
   fb.s(x + 2, y, P.plant)
   fb.r(x + 1, y + 1, 3, 1, P.plant)
   fb.r(x, y + 2, 5, 1, P.plant2)
