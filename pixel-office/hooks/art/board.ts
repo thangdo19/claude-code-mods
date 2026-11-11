@@ -1,16 +1,22 @@
-// The board on the back wall (approved art): empty, the plan-mode meeting's boxes and arrows, or the to-do words.
+// The board on the back wall (approved art): empty, the plan-mode meeting's boxes and arrows, the to-do words, or the
+// holiday's name (round 10).
 
 import { plain } from '../labels'
 import type { FB, Scene } from '../gfx/fb'
 import { P } from './palette'
 
-/** The board with nothing on it, or boxes and arrows in plan mode (the to-do words: boardWords). */
-export function board(fb: FB, x: number, y: number, w: number, h: number, plan: boolean, f: number): void {
+/** The board's frame, its white and the tray with two markers. */
+function blank(fb: FB, x: number, y: number, w: number, h: number): void {
   fb.r(x, y, w, h, P.boardFrame)
   fb.r(x + 1, y + 1, w - 2, h - 2, P.board)
   fb.r(x + 2, y + h - 1, w - 4, 1, '#6d7682')
   fb.s(x + 3, y + h - 1, P.red)
   fb.s(x + 5, y + h - 1, P.ink)
+}
+
+/** The board with nothing on it, or boxes and arrows in plan mode (the to-do words: boardWords). */
+export function board(fb: FB, x: number, y: number, w: number, h: number, plan: boolean, f: number): void {
+  blank(fb, x, y, w, h)
   if (plan) {
     for (let i = 0; i < 3; i++) {
       if (i > ((f >> 1) % 4)) break
@@ -36,11 +42,7 @@ const BOARD_INK = { done: P.green, doing: '#d9822b', todo: P.ink } as const
  */
 export function boardWords(sc: Scene, x: number, y: number, w: number, h: number, items: readonly BoardItem[]): void {
   const fb = sc.fb
-  fb.r(x, y, w, h, P.boardFrame)
-  fb.r(x + 1, y + 1, w - 2, h - 2, P.board)
-  fb.r(x + 2, y + h - 1, w - 4, 1, '#6d7682')
-  fb.s(x + 3, y + h - 1, P.red)
-  fb.s(x + 5, y + h - 1, P.ink)
+  blank(fb, x, y, w, h)
   // Text rows fully inside the white (a cell is two pixel rows), letters from the frame's inner edge.
   const first = Math.ceil((y + 1) / 2)
   const rows = Math.floor((y + h - 1) / 2) - first
@@ -65,4 +67,18 @@ export function boardWords(sc: Scene, x: number, y: number, w: number, h: number
     sc.text(x + 1, first + top + k, (mark + ' ' + words).padEnd(cols, ' '), BOARD_INK[it.state], P.board)
   })
   if (end < n) sc.text(x + 1, first + top + (end - start), ('+ ' + (n - end) + ' more').padEnd(cols, ' '), '#8a93a0', P.board)
+}
+
+/** The holiday on the board (approved round 10), each row centered, in marker (`lines`: 4 rows at most). */
+export function themeWords(sc: Scene, x: number, y: number, w: number, h: number, lines: readonly { text: string; ink: string }[]): void {
+  blank(sc.fb, x, y, w, h)
+  const first = Math.ceil((y + 1) / 2)
+  // (The last row stays free: a hand in front of it would hide letters.)
+  const rows = Math.floor((y + h - 1) / 2) - first - 1
+  const cols = w - 2
+  const top = first + Math.floor((rows - Math.min(rows, lines.length)) / 2)
+  lines.slice(0, rows).forEach((l, k) => {
+    const t = plain(l.text).slice(0, cols)
+    sc.text(x + 1 + Math.floor((cols - t.length) / 2), top + k, t, l.ink, P.board)
+  })
 }

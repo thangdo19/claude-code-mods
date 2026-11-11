@@ -22,6 +22,11 @@ export const setClock = (c: { hour?: number; date?: readonly [number, number, nu
   pinned = c
 }
 
+/** The date [year, month 1–12, day] at `now` (ms). */
+export const dateAt = (now: number): readonly [number, number, number] => {
+  const d0 = new Date(now)
+  return pinned.date ?? [d0.getFullYear(), d0.getMonth() + 1, d0.getDate()]
+}
 /** The hour at `now` (ms). */
 export const hourAt = (now: number): number => pinned.hour ?? new Date(now).getHours()
 /** The window's sky by the clock (night after 10 idle minutes stays as it was). */
@@ -81,7 +86,7 @@ const TET: Record<number, readonly [number, number]> = {
   2036: [1, 28], 2037: [2, 15], 2038: [2, 4], 2039: [1, 24], 2040: [2, 12], 2041: [2, 1], 2042: [1, 22], 2043: [2, 10], 2044: [1, 30], 2045: [2, 17],
 }
 /** A date as a day number (days since 1970), so ranges cross months and years. */
-const dayNo = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 86_400_000
+export const dayNo = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 86_400_000
 const weekday = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d)).getUTCDay()
 /** The day of month `m` that is its `n`th weekday `wd` (0 Sunday). */
 export const nthWeekday = (y: number, m: number, wd: number, n: number): number => 1 + ((wd - weekday(y, m, 1) + 7) % 7) + (n - 1) * 7
@@ -104,7 +109,7 @@ export const thanksgiving = (y: number): number => nthWeekday(y, 11, 4, 4)
  * Year `y`'s holidays as [holiday, first day, last day], the most important first: on its days it wins the wall, the
  * desk and the window. Monday holidays show the long weekend (Saturday to Monday).
  */
-function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, number][] {
+export function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, number][] {
   const out: [Exclude<Holiday, 'christmas'>, number, number][] = []
   const on = (h: Exclude<Holiday, 'christmas'>, m: number, d: number, before = 0, after = 0) => out.push([h, dayNo(y, m, d) - before, dayNo(y, m, d) + after])
   on('newyear', 12, 31, 0, 1)
@@ -153,8 +158,7 @@ const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'des
  * tree stays. On Feb 14 itself Valentine's wins over Tết (round 9).
  */
 export function decorAt(now: number): Decor {
-  const d0 = new Date(now)
-  const [y, m, d] = pinned.date ?? [d0.getFullYear(), d0.getMonth() + 1, d0.getDate()]
+  const [y, m, d] = dateAt(now)
   const t = dayNo(y, m, d)
   const out: Decor = { ...NO_DECOR }
   const sy = m >= 11 ? y : y - 1

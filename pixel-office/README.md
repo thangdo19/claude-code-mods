@@ -27,7 +27,8 @@ See it move: [the live intro page](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16
 - **Words in a bubble mean work.** `auth.ts` over Susan: she is reading that file. A red bubble: it failed.
 - **A picture bubble or none means a break** (… ha ♥ ♪).
 - **The Manager needs you**: `Your OK?`, `Question?`, `Done!`, `On hold`. The Manager picks up the red phone.
-- **The board** shows the to-do list. The Manager walks over and ticks each finished line.
+- **The board** shows the to-do list. The Manager walks over and ticks each finished line. With no to-dos it names
+  the holiday and its dates, or the next one coming.
 - **The list under the picture** names everyone and what they do, in plain words. It is always complete, even when
   the picture is too small to show everyone.
 
