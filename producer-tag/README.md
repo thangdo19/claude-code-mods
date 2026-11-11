@@ -1,6 +1,6 @@
 # producer-tag
 
-When Claude finishes or needs you, an anime-style voice calls out:
+When Claude needs your input, or finishes a longer piece of work, an anime-style voice calls out:
 
 > 「マスター！ …確認してください」 ("Master! …Please check this.")
 
@@ -8,16 +8,23 @@ You can look away while Claude works. The voice tells you when it's your turn.
 
 ## When it plays
 
-Only when it's your turn:
+Only for these two:
 
-- **Claude is done**: it finished its reply and nothing will wake it up again (the `Stop` hook).
-- **Claude stopped on an error**, like a usage limit or the API being down (`StopFailure`).
-- **Claude asks permission**: to run a tool, or to go ahead with a plan (`PermissionRequest`).
-- **Claude needs you for something else**, like a question from an MCP server, or a teammate or background session that needs you (`Notification`).
+- **Claude asks for your input**, and you haven't answered for 6 seconds: a permission to run a tool, a plan to
+  approve, a question, or anything else that opens a dialog (an MCP server's question, a teammate or background
+  session that needs you). Claude Code sends this reminder itself (`Notification`).
+- **Claude is done, after 10 seconds of work or more**: it finished its reply and nothing will wake it up again (the
+  `Stop` hook). The 10 seconds count from your last message. Stopping on an error (a usage limit, the API being down:
+  `StopFailure`) counts the same way.
 
 In `claude agents`, each background session plays for itself, so you hear each one once. The agents screen stays quiet when a session finishes.
 
 ## When it stays quiet
+
+You are still at the screen:
+
+- **A quick reply**: Claude finished less than 10 seconds after your message.
+- **You answered the dialog within 6 seconds.**
 
 Claude sometimes ends its turn only to wait. It comes back on its own, so the voice waits too:
 
@@ -25,7 +32,8 @@ Claude sometimes ends its turn only to wait. It comes back on its own, so the vo
 - **A background command or monitor is still running.**
 - **Claude scheduled a one-time wake-up** ("I'll check back in 20 minutes").
 
-When the last of these finishes, Claude wakes up, wraps up, and the voice plays then.
+When the last of these finishes, Claude wakes up, wraps up, and the voice plays then. The wait counts toward the
+10 seconds, so a long background job with a short wrap-up still plays.
 
 ⚠️ A dev server left running in the background keeps the "done" voice off until it stops. Alerts that need you still play.
 
@@ -56,24 +64,33 @@ Or inside Claude Code: `/plugin configure producer-tag@claude-code-mods`, or `/c
 - **Back to the default:** clear the option (leave it empty).
 - **If your file is missing or won't play**, the default tag plays instead, so you never miss an alert.
 
-## Change the gap between plays
+## Change the timing
 
-`COOLDOWN_MS` in `hooks/register.ts` (4 seconds by default).
+In `hooks/register.ts`:
+
+- `MIN_WORK_MS`: the shortest work whose finish plays (10 seconds).
+- `COOLDOWN_MS`: the gap between two plays (4 seconds).
+
+The 6 seconds before an ask plays are Claude Code's own and can't be changed here.
 
 ## Limits
 
 - macOS only, because Claude Code plays sound with `afplay`. On Linux and Windows it stays silent.
+- ⚠️ Setting `CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS` turns off Claude Code's reminders, and the asks with them.
 
 ## Details
 
-- **No double plays:** one prompt can trigger two alerts at once, so the tag won't play again within 4 seconds.
-- **No double plays across windows:** the agents screen passes on a background session's "needs your input", and a team lead passes on its teammate's permission request. Those play only if no Claude Code window played in the last 4 seconds. Every window saves when it last played in the mod's store (`~/.claude/plugins/store/`).
-- ⚠️ In `claude agents`, a session's question that isn't a tool or plan approval (like an MCP question) can still play twice, about 6 seconds apart: once from the agents screen, once from the session's own reminder.
-- **Reminders:** after 6 seconds at a permission dialog, Claude Code sends a reminder. For a tool or plan dialog the tag already played, so the reminder stays quiet. Any other dialog plays on its reminder.
+- **Why asks wait 6 seconds:** Claude Code's `PermissionRequest` hook fires at once, but also when no dialog ever
+  shows (a background helper that can't ask, an action refused outright). The reminder comes only for a dialog that
+  is really open, once per dialog, after 6 seconds with no key pressed. So the voice trusts the reminder alone.
+- **No double plays:** dialogs that open together play once (nothing plays again within 4 seconds).
+- **No double plays across windows:** the agents screen passes on a background session's "needs your input", and a team lead passes on its teammate's permission request. Those play only if no Claude Code window played in the last 4 seconds. The dialog's own reminder, about 6 seconds later, stays quiet (for 10 seconds after a passed-on alert). Every window saves when it last played in the mod's store (`~/.claude/plugins/store/`).
+- ⚠️ If a dialog gets hidden (you start typing) and shows again, Claude Code may remind twice, and the voice plays twice.
+- **What the 10 seconds count:** the time from your last message to the finish, waits on background work included. A turn Claude starts on its own (a wake-up, a schedule) counts from its start.
 - **A short wait before "done":** the voice waits 1.5 seconds (`SETTLE_MS`). If a helper finished during Claude's last reply, Claude starts again right away and the voice stays quiet until the real finish.
 - **Stop hooks:** if a Stop hook (or a `/goal`) sends Claude back to work, the voice waits for the finish that sticks.
 - **Also stays quiet** when a helper agent (subagent) finishes, for the 60-second "still idle" nudge, and for notices that don't need you: logins, push notifications Claude sends, computer use starting or stopping, other plugins' alerts.
-- **Repeating schedules** (`/loop 5m`, a cron) don't hold back "done", so a normal chat still plays.
+- **Repeating schedules** (`/loop 5m`, a cron) don't hold back "done": each round that takes 10 seconds or more plays.
 - **Never in the way:** the sound plays in the background. It never slows Claude down, and if it can't play, nothing breaks.
 
 ## Credits

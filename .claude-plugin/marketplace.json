@@ -8,7 +8,7 @@
     {
       "name": "producer-tag",
       "source": "./producer-tag",
-      "description": "Plays an anime-voice producer tag (「マスター！確認してください」, 'Master! Please check this.') when Claude finishes or needs your approval."
+      "description": "Plays an anime-voice producer tag (「マスター！確認してください」, 'Master! Please check this.') when Claude needs your input, or finishes work that took 10 seconds or more."
     },
     {
       "name": "usage-forecast",

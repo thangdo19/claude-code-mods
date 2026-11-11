@@ -4,7 +4,7 @@ Small mods (plugins) that change how Claude Code looks and sounds.
 
 | Mod | What it does |
 |---|---|
-| [producer-tag](producer-tag/README.md) | An anime voice says 「マスター！確認してください」 ("Master! Please check this.") when Claude finishes or needs you. |
+| [producer-tag](producer-tag/README.md) | An anime voice says 「マスター！確認してください」 ("Master! Please check this.") when Claude needs your input, or finishes work that took 10 seconds or more. |
 | [usage-forecast](usage-forecast/README.md) | A "weather report" above the prompt: how full the context is, plus your session and weekly limits. |
 | [pixel-office](pixel-office/README.md) | A pixel-art office beside your chat. You are the CEO, Claude is the Manager, and every tool call sends a staff member to do the job. |
 
