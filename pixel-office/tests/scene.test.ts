@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { renderBig } from '../hooks/scene'
 import { BigSim } from '../hooks/walk'
-import { EMPTY, NIGHT_MS, startJob, view } from '../hooks/office'
+import { EMPTY, NIGHT_MS, startJob, startTurn, view } from '../hooks/office'
 
 import { setClock } from '../hooks/world'
 
@@ -41,4 +41,38 @@ test('at night with everyone gone the lights are off: the room and its letters g
   expect([42, 43].flatMap(y => row(y, 6, 10)).includes(0xe8c25a)).toBe(false)
   expect([1, 2, 3, 4, 5].flatMap(y => row(y, 11, 15)).includes(0xe04b4b)).toBe(false)
   expect([45, 47, 49, 51].flatMap(y => row(y, 0, 8)).some(c => [0xff5050, 0xffd84a, 0x5fb8ff, 0x5ff08a].includes(c))).toBe(true)
+})
+
+/** The letters on text row `row` from column x0 to x1, as drawn (a hidden letter is a space). */
+const words = (sc: ReturnType<typeof renderBig>, row: number, x0: number, x1: number) => {
+  const out = Array.from({ length: x1 - x0 + 1 }, () => ' ')
+  for (const t of sc.texts) if (t.row === row && t.x >= x0 && t.x <= x1) out[t.x - x0] = t.ch
+  return out.join('').trim()
+}
+
+test('the board names the holiday when it has no to-dos (approved round 10); to-dos and doodles win; nowhere else', async () => {
+  // A plain day (June 1): the next holiday.
+  const idle = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  const sim = new BigSim()
+  const plain = renderBig(run(sim, idle, 2, 2), sim, 4, 2)
+  expect([2, 3, 4, 5].map(r => words(plain, r, 32, 45))).toEqual(['Next up', 'Juneteenth', 'Jun 19', 'in 18 days'])
+  // To-dos win the board.
+  const busy = new BigSim()
+  run(busy, todoTurn(1), 2, 40)
+  expect(words(renderBig(view(todoTurn(1), 5_000), busy, 1, 2), 3, 32, 45)).toBe('> Fix it')
+  // Thinking at the board, the Manager doodles on a plain board: no words under the marks.
+  const thinker = new BigSim()
+  const turn = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  let v = view(turn, 2)
+  for (let i = 0; i < 400 && !(thinker.here('manager', 'board') && thinker.tick - thinker.actors.get('manager')!.arrivedAt > 4); i++) v = run(thinker, turn, 2 + i * 125, 1)
+  expect(thinker.here('manager', 'board')).toBe(true)
+  expect([2, 3, 4, 5].map(r => words(renderBig(v, thinker, 4, thinker.tick), r, 32, 45)).join('')).toBe('')
+  // Veterans Day in the Christmas season: both on the board; no banner over it, nothing on the idle TV.
+  setClock({ hour: 10, date: [2026, 11, 11] })
+  const vets = new BigSim()
+  const sc = renderBig(run(vets, idle, 2, 2), vets, 4, 2)
+  setClock(TEST_CLOCK)
+  expect([2, 3, 4, 5].map(r => words(sc, r, 32, 45))).toEqual(['Veterans Day', 'Nov 11', 'Christmas', 'Nov 1-Jan 1'])
+  expect(words(sc, 0, 31, 46)).toBe('')
+  expect(words(sc, 26, 32, 47)).toBe('')
 })

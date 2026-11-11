@@ -4,7 +4,7 @@
 
 import type { Role, Sec } from '../types'
 import { still, Scene } from './gfx/fb'
-import { board, boardWords, type BoardItem } from './art/board'
+import { board, boardWords, themeWords, type BoardItem } from './art/board'
 import { iconBubble, textBubble, thinkBubble } from './art/bubbles'
 import {
   bossChair, cabinet, clock, coffeeMachine, desk, deskPhone, door, globe, monitor, nameplate, officeChair, plant, plate, rack, room, typewriter,
@@ -18,6 +18,7 @@ import { agentOf, isRole, secActor, type BigSim } from './walk'
 import { decorAt, DESK_KIND, DESK_OWNER, remote, skyAt } from './world'
 import { cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, printer, skyPane, starFrame, testLamp } from './art/extras'
 import { deskDecor, plantCorner, sillSnow, stockings, wallDecor, windowFx, wreath } from './art/holidays'
+import { boardTheme } from './theme'
 import { lightsOff } from './art/night'
 import { C } from './gfx/color'
 import { HOME, managerFree, meeting, SUP, type ActKind, type Icon, type Who } from './life'
@@ -135,15 +136,20 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     state: t.status === 'completed' ? (life.ticked.has(t.text) ? 'done' : 'doing') : t.status === 'in_progress' ? 'doing' : 'todo',
   }))
   const B = U.board
+  // Thinking at the board, the Manager doodles on it; else, with no to-dos and no meeting, it names the holiday
+  // (approved round 10).
+  const doodling = !meeting(v) && !items.length && v.mood === 'think' && sim.here('manager', 'board')
+  const onBoard = !meeting(v) && !items.length && !doodling ? boardTheme(v.now) : null
   if (!meeting(v) && items.length) boardWords(sc, U.boardWords.x, U.boardWords.y, U.boardWords.w, U.boardWords.h, items)
   else if (meeting(v)) board(fb, B.x, B.y, B.w, B.h, true, F)
+  else if (onBoard) themeWords(sc, U.boardWords.x, U.boardWords.y, U.boardWords.w, U.boardWords.h, onBoard)
   else still(fb, 'board', f => board(f, B.x, B.y, B.w, B.h, false, 0))
   // The window by the time of day (approved round 6); night after 10 idle minutes still wins.
   skyPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, v.night ? 'night' : skyAt(v.now), F)
   if (deco.window) windowFx(fb, U.window.x, U.window.y, U.window.w, U.window.h, deco.window, F)
   if (deco.snowy && deco.window !== 'snow') sillSnow(fb, U.window.x, U.window.y, U.window.w, U.window.h)
   // Thinking at the board (approved round 6, "Many ways to think"): doodles, more the longer the Manager stays.
-  if (!meeting(v) && !items.length && v.mood === 'think' && sim.here('manager', 'board')) {
+  if (doodling) {
     const m = sim.actors.get('manager')!
     doodle(fb, B.x + 2, B.y + 2, 1 + ((sim.tick - m.arrivedAt) >> 1))
   }
