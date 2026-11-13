@@ -8,6 +8,7 @@ import type { Office } from '../types'
 import { EMPTY, lines, view, type Line, type View } from './office'
 import { CellCoder, type Cells } from './cells'
 import { renderBig } from './scene'
+import type { Scene } from './gfx/fb'
 import { BigSim } from './walk'
 import { Calm } from './calm'
 import { Camera } from './camera'
@@ -47,15 +48,31 @@ class Runtime {
   tick = 0
   /** Someone walked (or the camera glided) last tick: the frame where they stop is drawn too. */
   wasMoving = false
+  /** Eco (approved round 11): a quiet office with nobody walking is drawn 2 times a second, not 4 (see `onTick`). */
+  eco = false
+  /**
+   * The picture's frame, in quarters: a tick adds 2 (a frame every 2 ticks, 4 a second), an eco tick 1 (2 a second).
+   * So every frame drawn is one on from the last, at either pace. (By the tick alone, a frame drawn every 4th tick
+   * was always even, and whatever takes turns frame by frame froze: a talker's mouth, the cooler's bubbles.)
+   */
+  quarters = 0
   ticking = false
   timerStarted = false
   /** Calls the person said no to (the dialog's answer comes before the call ends). */
   readonly deniedCalls = new Set<string>()
+  /** Whose call the open "Your OK?" is for: an agent's id, or undefined for the Manager's own. */
+  askedBy: string | undefined
+  /** AskUserQuestion calls open now (their "Question?" ends with them, not with another call). */
+  asking = 0
+
+  /** The picture every frame is drawn on (one, drawn over: no new one a frame). */
+  private scene: Scene | undefined
 
   /** The office now, as the pane shows it (`shape`), with the desk of the agent being viewed framed. */
   draw(v: View, shape: Shape, viewing?: string): Cells {
-    const full = renderBig(v, this.sim, this.tick >> 1, this.tick, viewing)
-    return shape.kind === 'big' ? this.coder.encode(full, shape.skip, shape.rows) : this.coder.encode(this.camera.view(full, shape.cols, shape.rows * 2))
+    const full = (this.scene = renderBig(v, this.sim, this.quarters >> 2, this.tick, viewing, this.scene))
+    // (The camera's window is read straight from the full office: no copy of it first.)
+    return shape.kind === 'big' ? this.coder.encode(full, shape.skip, shape.rows) : this.coder.window(full, this.camera.left, this.camera.top, shape.cols, shape.rows)
   }
 }
 
@@ -88,10 +105,15 @@ export async function onTick($: EngineInterface): Promise<void> {
     const moving = rt.sim.walking() || (cam !== null && rt.camera.moving())
     // Above the prompt (classic renderer) the picture moves only while someone walks, at most
     // 4 frames a second, so the terminal has little to redraw; beside the transcript it is alive.
-    // The frame where everyone stops (a bubble appears) is always drawn.
+    // The frame where everyone stops (a bubble appears) is always drawn. The dark office (night, nobody inside) is
+    // drawn once a second; a night with someone still in (an agent, the Manager on hold) as by day. A quiet office
+    // (Eco, approved round 11: between turns, nobody at work) is drawn twice a second.
     const stopped = rt.wasMoving && !moving
     rt.wasMoving = moving
-    const drawNow = stopped || !((rt.mounted.inline && (!moving || rt.tick % 2)) || (!moving && rt.tick % 2) || (v.night && !moving && rt.tick % 8))
+    rt.eco = !moving && rt.sim.quiet(v)
+    rt.quarters += rt.eco ? 1 : 2
+    const drawNow =
+      stopped || !((rt.mounted.inline && (!moving || rt.tick % 2)) || (!moving && rt.tick % 2) || (rt.sim.dark(v) && !moving && rt.tick % 8) || (rt.eco && rt.tick % 4))
     // The list changes with time as well (a break changes, "Done!" fades): looked at 4 times a second, and on
     // every frame drawn. When it changed the whole pane is drawn again (ui.render), the picture with it: no
     // frame of our own then, it would be drawn twice.

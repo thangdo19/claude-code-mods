@@ -49,7 +49,7 @@ export type Tick = {
   now: number
   v: View
   sim: BigSim
-  /** The full office's scene and cells, the camera's (64 × 16 and 40 × 12), and the list at three sizes. */
+  /** The full office's scene (drawn over on the next tick) and cells, the camera's (64 × 16 and 40 × 12), and the list at three sizes. */
   full: Scene
   cells: string
   cam: string
@@ -60,7 +60,7 @@ export type Tick = {
 }
 
 /** The hour and date the day runs at (`setClock`); by default a June day at 10, so the golden frames never change. */
-export type Clock = { hour?: number; date?: readonly [number, number, number] }
+export type Clock = { hour?: number; minute?: number; date?: readonly [number, number, number] }
 export type Options = { ticks: number; seed?: number; draw?: boolean; clock?: Clock; /** The day starts as a new session: the office opens. */ opening?: boolean }
 
 /** Runs the day; `each` sees every tick. With `draw: false` only the people move (for the fuzz's rule checks). */
@@ -85,6 +85,7 @@ export function scenario(opt: Options, each: (t: Tick) => void): void {
   let dialogUntil = -1
   let compactUntil = -1
   let viewing: string | undefined
+  let scene: Scene | undefined
   const nightAt = Math.floor(opt.ticks * 0.55)
   const clearAt = Math.floor(opt.ticks * 0.8)
 
@@ -189,7 +190,8 @@ export function scenario(opt: Options, each: (t: Tick) => void): void {
     }
     cam.step(v, 64, 32, sim)
     camSmall.step(v, 40, 24, sim)
-    const full = renderBig(v, sim, i >> 1, i, viewing)
+    // (As the pane does: one picture drawn over each frame, the cameras' windows read straight from it.)
+    const full = (scene = renderBig(v, sim, i >> 1, i, viewing, scene))
     const ls = lines(v, sim.seated(), r => sim.doing(v, r), id => sim.lookOf(id), sim.closing(v))
     const list = [fitRows(ls, 64, 40), fitRows(ls, 40, 12), fitRows(ls, 30, 4)]
       .map(rows => rows.map(l => l.dot + '|' + l.who + '|' + l.what + '|' + l.tone).join('\n'))
@@ -197,8 +199,8 @@ export function scenario(opt: Options, each: (t: Tick) => void): void {
     each({
       i, now, v, sim, full,
       cells: coders.full.encode(full).cells,
-      cam: coders.cam.encode(cam.view(full, 64, 32)).cells,
-      camSmall: coders.camSmall.encode(camSmall.view(full, 40, 24)).cells,
+      cam: coders.cam.window(full, cam.left, cam.top, 64, 16).cells,
+      camSmall: coders.camSmall.window(full, camSmall.left, camSmall.top, 40, 12).cells,
       short: i % 50 === 0 ? coders.short.encode(full, 1, 29).cells : undefined,
       list,
     })

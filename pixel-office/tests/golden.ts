@@ -4,8 +4,8 @@
 export const TICKS = 3000
 export const EVERY = 100
 export const GOLDEN: readonly string[] = [
-  '92592bd8', '31b970e7', '43d452d3', 'e765adeb', '0f180acc', '95c2528c', '1884a7d0', '2d11a013', '18fa1bbd', 'afd23aa6',
-  '18bb8624', 'b624f0e6', 'db730ba7', '84572ab7', 'c4e64fd4', 'c1f3a2e6', 'f3356299', '4af9e905', 'db047422', 'cc8c58f0',
-  '80447907', '16af3dbb', 'ea789557', '95da7207', '5a591d63', '1a054b69', 'f9940d30', '8461ea1c', '4a97dab7', 'c8bdc2b0',
+  '0bc8c27f', '96f322ad', '597121bd', '2c2708f3', '8c2dde23', 'ed070c19', 'f19d72bd', '864f340c', '594492ef', 'd4f45a1a',
+  'e6a8be04', 'be79089c', 'a97d9cbd', '64618ff3', '8f0302c9', 'd165c8a8', 'a4f38bbb', '13876497', '382ecad2', '7b083cd0',
+  '863ca518', '91f89f28', '3a39eb7c', 'f5e0c871', '5079d931', 'a9abc4ed', '4060f88b', '9f5139c9', '21847031', 'd89aeabb',
 ]
 

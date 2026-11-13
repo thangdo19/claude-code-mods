@@ -75,8 +75,11 @@ start, seen, taken = time.time(), None, set()
 while time.time() - start < 25:
     pump(0.25)
     if 'trust this folder' in text().lower():
-        # (The arrow key in one write: sent a byte at a time, its ESC alone reads as "Esc to cancel" and exits.)
-        os.write(fd, b'\x1b[B'); pump(0.5); send('\r'); pump(1); continue
+        # (The arrow key in one write: sent a byte at a time, its ESC alone reads as "Esc to cancel" and exits. The prompt
+        # takes keys a moment after it shows; Enter only once "Yes" is picked, or it exits.)
+        pump(1.5); os.write(fd, b'\x1b[B'); pump(1)
+        if any('❯ Yes' in row for row in screen.display): send('\r'); pump(1)
+        continue
     if seen is None and any('▀' in row for row in screen.display): seen = time.time()
     if not opening and time.time() - start >= 10: break
     if opening and seen is not None:

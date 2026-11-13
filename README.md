@@ -15,8 +15,10 @@ Small mods (plugins) that change how Claude Code looks and sounds.
 - **Each tool call is a person at work.** Susan reads files, Lauren runs commands, Mary-Beth types, John carries the
   mail and the `git` pushes, Molly keeps the to-dos, Leo and Paige call in from home, agents get a desk of their own.
 - **Words in a bubble mean work.** The Manager (Claude) tells you when it needs you: `Your OK?`, `Question?`, `Done!`.
-- **It has a day of its own**: breaks between turns, a party after a long turn, lights off after 10 idle minutes,
-  holidays through the year, and an office cat.
+- **It has a day of its own**: breaks between turns, a party after a long turn or enough short ones, lights off after 10 idle minutes,
+  holidays through the year, and an office cat. The clock tells your time, the sun moves across the floor, and some days it rains.
+- **Small things mean something.** The water bottle empties as Claude's memory (context) fills up, pages pile up on
+  Mary-Beth's desk with every edit, and empty cups on the Manager's desk show how long Claude has been thinking.
 
 More in its [README](pixel-office/README.md), or [see it move](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16TMQd).
 

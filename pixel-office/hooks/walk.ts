@@ -364,6 +364,16 @@ export class BigSim {
     return v.night && this.actors.has('manager')
   }
 
+  /**
+   * A quiet office (approved round 11, Eco): between turns by day with no agent at work, no Janitor and no paper plane
+   * in the air. While nobody walks either, the pane draws it half as often.
+   */
+  quiet(v: View): boolean {
+    if (v.mood !== 'idle' || v.night || v.janitor || this.life.plane) return false
+    for (const s of v.secs) if (s.status === 'run') return false
+    return true
+  }
+
   walking(): boolean {
     for (const a of this.actors.values()) if (a.delay > 0 || a.t < a.length) return true
     return false

@@ -29,6 +29,10 @@ See it move: [the live intro page](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16
 - **The Manager needs you**: `Your OK?`, `Question?`, `Done!`, `On hold`. The Manager picks up the red phone.
 - **The board** shows the to-do list. The Manager walks over and ticks each finished line. With no to-dos it names
   the holiday and its dates, or the next one coming.
+- **The water bottle** is Claude's memory (the context): it empties as the conversation fills up, the last of the
+  water blinks red, and it is full again after compacting.
+- **Small signs**: a page on Mary-Beth's desk for each edit this turn, an empty cup on the Manager's desk for every
+  10 seconds of thinking, sparkles at the rack's lamp when the tests pass, a sweat drop when a job fails.
 - **The list under the picture** names everyone and what they do, in plain words. It is always complete, even when
   the picture is too small to show everyone.
 
@@ -37,11 +41,14 @@ See it move: [the live intro page](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16
 - **A new session**: the office opens. Everyone walks in, waves, and the two at home say hi on the TV.
 - **While Claude works**: everyone is at their desk. A finished job is reported to the Manager.
 - **Between turns**: coffee, chats, watering the plants, a paper plane, lunch at noon.
-- **A long turn done** (2 minutes or more): confetti and a cake.
+- **A long turn done** (2 minutes or more), or enough short ones: confetti, a cake, a slice for everyone, and the cat
+  in a party hat.
 - **After 10 idle minutes**: everyone goes home, the Manager last, and the lights go off. Type, and they come back.
-- **The window** follows your clock: morning, day, sunset, night.
+- **The window** follows your clock: morning, day, sunset, night. The sun lies on the floor by day; about one day
+  in five it rains and two umbrellas lean by the door. The wall clock tells the time.
 - **Holidays** dress the office: every US holiday plus Tết. Christmas builds up from November 1.
-- **The office cat** naps on the windowsill and strolls the halls.
+- **The office cat** naps on the windowsill and strolls the halls. In the dark its eyes glow.
+- **A quiet office** is drawn half as often, so it costs your terminal less.
 
 ## Open and close
 

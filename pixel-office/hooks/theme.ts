@@ -85,7 +85,7 @@ export function themesOn(y: number, m: number, d: number): Theme[] {
 }
 
 /** The day last asked about (every place asks each frame; a day's answer never changes). */
-let memo: { t: number; themes: Theme[]; next?: (Theme & { inDays: number }) | null } | null = null
+let memo: { t: number; themes: Theme[]; next?: (Theme & { inDays: number }) | null; board?: BoardLine[] | null } | null = null
 export function themesAt(now: number): Theme[] {
   const [y, m, d] = dateAt(now)
   const t = dayNo(y, m, d)
@@ -136,7 +136,13 @@ export type BoardLine = { text: string; ink: string }
  * The whiteboard's rows (4 at most, 14 letters each): one holiday with its dates, days left and next step; two with
  * name and dates each; on a plain day the teaser.
  */
-export function boardTheme(now: number): BoardLine[] | null {
+export function boardTheme(now: number): readonly BoardLine[] | null {
+  themesAt(now)
+  const mo = memo!
+  if (mo.board === undefined) mo.board = boardOn(now)
+  return mo.board
+}
+function boardOn(now: number): BoardLine[] | null {
   const ths = themesAt(now)
   if (!ths.length) {
     const n = nextTheme(now)

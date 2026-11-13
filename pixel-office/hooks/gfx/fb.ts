@@ -67,6 +67,12 @@ export class Scene {
   constructor(w: number, h: number) {
     this.fb = new FB(w, h)
   }
+  /** Blank again, to draw the next frame on (the pane keeps one Scene; see `renderBig`'s `into`). */
+  reset(): void {
+    this.fb.p.fill(-1)
+    this.fb.clip = null
+    this.texts.length = 0
+  }
   /**
    * Printable ASCII only (accents dropped), so no character can be wider than its cell in any terminal. The cell's
    * two pixels take the background color, so anything drawn over them later hides the letter (see settle).

@@ -27,7 +27,7 @@ export type LastJob = {
 }
 
 /** A finished call, kept for the turn so the picture can show it at a human pace. */
-export type Done = { role: Role; short: string; full: string; startedAt: number; endedAt: number }
+export type Done = { role: Role; short: string; full: string; startedAt: number; endedAt: number; /** It failed, or the person said no. */ err?: boolean }
 
 /** Where a subagent stands: working, finished, failed or stopped, or a teammate waiting for a message. */
 export type SecStatus = 'run' | 'done' | 'fail' | 'idle'
@@ -83,6 +83,12 @@ export type Office = {
   lastActivity: number
   /** Next spawn order number. */
   order: number
+  /** Work time (ms) of the turns since the last party: enough of it earns one. An older stored state has none. */
+  workMs?: number
+  /** The turn that just ended earned a party (shown while the mood is done). */
+  party?: boolean
+  /** How full the memory (context) is, 0–100, as last measured (round 11: the cooler's bottle). Unknown: none. */
+  context?: number
 }
 
 declare module 'claude-code' {

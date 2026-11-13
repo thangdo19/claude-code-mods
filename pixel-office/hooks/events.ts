@@ -1,11 +1,11 @@
 // What happens in the session, as changes to the office: turns, the model's stream, tool calls, dialogs, agents,
 // compacting, /clear. Each hook lets the event through whatever the office does with it.
 
-import type { On } from 'claude-code'
+import type { EngineInterface, On } from 'claude-code'
 
 import type { Mood, Office } from '../types'
 import { describe, oneLine, questionOf } from './labels'
-import { addSec, addTask, EMPTY, endJob, endStatus, endTurn, patchSec, patchTask, setMood, startJob, startTurn, tasksFrom, todosFrom } from './office'
+import { addSec, addTask, afterCall, bottleLeft, EMPTY, endJob, endStatus, endTurn, patchSec, patchTask, setMood, startJob, startTurn, tasksFrom, todosFrom } from './office'
 import { isStream } from './moods'
 import { change, rt } from './loop'
 
@@ -14,7 +14,35 @@ const NEEDS_YOU = new Set(['elicitation_dialog', 'elicitation_url_dialog', 'agen
 /** What Claude Code tells the model when the person says no at a permission dialog. */
 const REJECTED = /user (?:doesn't want to proceed|rejected|denied)|was rejected|permission denied/i
 
+/**
+ * How full the memory (context) is, for the cooler's bottle (approved round 11). Stored only when the bottle's level
+ * changes, so most turns store nothing. No figure yet (a new session, or just compacted): nothing to store.
+ */
+async function measured($: EngineInterface, percent: number | undefined): Promise<void> {
+  if (typeof percent !== 'number' || bottleLeft(rt.latest.context ?? 0) === bottleLeft(percent)) return
+  await change($, o => ({ ...o, context: percent }))
+}
+/** The memory's fill right now, if the session has one. */
+async function usedNow($: EngineInterface): Promise<number | undefined> {
+  try {
+    return (await $.session.usage()).context.percent
+  } catch {
+    return undefined
+  }
+}
+/** A session that comes back (a reload, a resume) reads its memory once (called at `session.start`, pane.tsx). */
+export async function measureNow($: EngineInterface): Promise<void> {
+  await measured($, await usedNow($)).catch(() => {})
+}
+
 export function events(on: On): void {
+  // The session measures itself after each main turn: the cooler's bottle follows the memory.
+  on('session.measure', async ($, e, next) => {
+    await measured($, e.context.percent).catch(() => {})
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+
   // A turn starts: the Manager wakes; an agent's run starts (a teammate wakes).
   on('turn.start', async ($, e, next) => {
     try {
@@ -69,9 +97,21 @@ export function events(on: On): void {
     } catch {
       // The office misses this call; the tool runs anyway.
     }
-    const result = await next(e)
+    // (An open AskUserQuestion keeps its "Question?" while other calls end.)
+    const asks = agent === undefined && tool === 'AskUserQuestion'
+    if (asks) rt.asking++
+    const result = await (async () => {
+      try {
+        return await next(e)
+      } finally {
+        if (asks) rt.asking = Math.max(0, rt.asking - 1)
+      }
+    })()
     try {
-      if (agent === undefined) {
+      // An agent's call ended: the "Your OK?" it waited on is answered.
+      if (agent !== undefined) {
+        if (rt.latest.mood === 'permission' && rt.askedBy === agent) await change($, (o, now) => afterCall(o, now, agent, rt.askedBy, rt.asking > 0))
+      } else {
         const failed = result.isError === true || (result.deny !== undefined && result.deny !== '')
         const denied = rt.deniedCalls.delete(id) || (failed && REJECTED.test(result.text ?? result.deny ?? ''))
         if (tool === 'AskUserQuestion') await change($, (o, now) => (o.mood === 'ask' ? setMood(o, 'think', now) : o))
@@ -92,7 +132,8 @@ export function events(on: On): void {
           }
           await change($, (o, now) => {
             const ended = endJob(tasks(o), id, role, { short: label.short, full: label.full, err: failed && !denied, denied, endedAt: now })
-            const calm = ended.mood === 'permission' ? setMood(ended, 'work', now) : ended
+            // The dialog this call waited on is answered ("Your OK?", or a notice's "Question?").
+            const calm = afterCall(ended, now, undefined, rt.askedBy, rt.asking > 0)
             return bg ? { ...calm, bg: [...calm.bg, label.full.replace(/^\$ /, '').replace(/ \(in background\)$/, '')].slice(-8) } : calm
           })
         }
@@ -109,6 +150,7 @@ export function events(on: On): void {
       const l = describe(e.tool_name, (e.tool_input ?? {}) as Record<string, unknown>, rt.cwd)
       const sec = e.agent_id === undefined ? undefined : rt.latest.secs.find(s => s.id === e.agent_id)
       const text = e.tool_name === 'ExitPlanMode' ? 'Plan ready: your OK?' : 'Needs your OK: ' + (sec ? sec.name + ' wants ' : '') + l.full.replace(/^\$ /, '')
+      rt.askedBy = e.agent_id
       await change($, (o, now) => setMood(o, 'permission', now, text))
     } catch {
       // The dialog shows anyway.
@@ -119,7 +161,8 @@ export function events(on: On): void {
   on('classic.PermissionDenied', async ($, e, next) => {
     rt.deniedCalls.add(e.tool_use_id)
     try {
-      await change($, (o, now) => (o.mood === 'permission' ? setMood(o, 'think', now) : o))
+      // (Your "no" to an agent's call: the Manager goes on waiting on the agent.)
+      await change($, (o, now) => (o.mood === 'permission' ? setMood(o, rt.askedBy === undefined ? 'think' : 'work', now) : o))
     } catch {
       // The Manager stays as it was.
     }
@@ -195,7 +238,9 @@ export function events(on: On): void {
       else
         await change($, (o, now) => {
           const s = o.secs.find(x => x.id === id)
-          return s ? patchSec(o, id, { status: e.isAborted ? 'fail' : endStatus(e.reason, s.teammate), endedAt: now }) : o
+          const ended = s ? patchSec(o, id, { status: e.isAborted ? 'fail' : endStatus(e.reason, s.teammate), endedAt: now }) : o
+          // (Its run is over: a "Your OK?" for one of its calls is too.)
+          return afterCall(ended, now, id, rt.askedBy, rt.asking > 0)
         })
     } catch {
       // The office shows the last state.
@@ -208,10 +253,15 @@ export function events(on: On): void {
     if (e.agentId !== undefined) return next(e)
     // (It counts as activity: a /compact at night wakes the office before the Janitor comes.)
     await change($, (o, now) => ({ ...o, compacting: true, lastActivity: now })).catch(() => {})
+    let cleaned = false
     try {
-      return await next(e)
+      const result = await next(e)
+      cleaned = true
+      return result
     } finally {
-      await change($, o => ({ ...o, compacting: false })).catch(() => {})
+      // The memory is free again (round 11): a full bottle until the next turn is measured (there is no figure before).
+      const used = cleaned ? ((await usedNow($)) ?? 0) : undefined
+      await change($, o => ({ ...o, compacting: false, ...(used === undefined ? {} : { context: used }) })).catch(() => {})
     }
   }).catch(($, e, next) => next(e))
 

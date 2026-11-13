@@ -4,7 +4,7 @@ import { renderBig } from '../hooks/scene'
 import { BigSim } from '../hooks/walk'
 import { REPORT_AFTER } from '../hooks/life'
 import { BOSS_BUBBLE } from '../hooks/layout'
-import { EMPTY, endJob, fitRows, lines, MIN_SHOW, NIGHT_MS, ROLES, setMood, startJob, startTurn, view, WHO } from '../hooks/office'
+import { EMPTY, endJob, endTurn, fitRows, lines, MIN_SHOW, NIGHT_MS, PARTY_MS, ROLES, setMood, startJob, startTurn, view, WHO } from '../hooks/office'
 import { remote, setClock } from '../hooks/world'
 
 import { run, sec, TEST_CLOCK, todoTurn } from './helpers'
@@ -338,4 +338,60 @@ test('compacting: staff and the Manager step out, a busy agent keeps its desk, t
   expect([...sim.actors.keys()].sort()).toEqual(['archivist', 'courier', 'it', 'manager', 'planner', 'sec:a', 'sec:b', 'typist'])
   // (Still thinking: the Manager may be pacing or at the board, but inside.)
   expect((['manager', ...STAFF] as const).every(r => !sim.actors.get(r)!.leaving)).toBe(true)
+})
+
+test('when the turn ends nobody rushes off together: 2 at a time; at a party nobody sets off until it is over', async () => {
+  const day = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  const who = ['manager', ...STAFF] as const
+  /** Who set off for somewhere else this tick. */
+  const setOff = (sim: BigSim, before: Map<string, string>) => who.filter(r => sim.actors.get(r)!.dest !== before.get(r))
+  const dests = (sim: BigSim) => new Map(who.map(r => [r, sim.actors.get(r)!.dest as string]))
+  for (const ms of [30_000, 150_000]) {
+    const sim = new BigSim()
+    run(sim, day, 2, 8)
+    const work = setMood(startTurn(day, 10_000), 'work', 10_000)
+    run(sim, work, 10_000, 240)
+    const at = 10_000 + ms
+    const done = endTurn(work, 'answer', false, ms, at)
+    const party = ms >= 120_000
+    expect(view(done, at + 500).party).toBe(party)
+    const showMs = party ? PARTY_MS : 0
+    // The party: everyone stays where they are (and cheers).
+    for (let i = 0; i * 125 < showMs - 250; i++) {
+      const before = dests(sim)
+      const v = run(sim, done, at + 125 + i * 125, 1)
+      expect(v.party).toBe(true)
+      expect(setOff(sim, before)).toEqual([])
+    }
+    // After it (or at once, with no party): they set off for their breaks, never more than 2 in a tick, and with 2
+    // on the way nobody else for the moment.
+    let most = 0
+    let went = 0
+    for (let i = 0; i < 160; i++) {
+      const before = dests(sim)
+      const walking = STAFF.filter(r => !sim.here(r) && sim.life.activity(r)).length
+      run(sim, done, at + showMs + 2000 + i * 125, 1)
+      const n = setOff(sim, before).filter(r => r !== 'manager').length
+      if (walking >= 2 && i < 12) expect(n).toBe(0)
+      most = Math.max(most, n)
+      went += n
+    }
+    expect(most).toBeLessThanOrEqual(2)
+    expect(went).toBeGreaterThan(0)
+  }
+})
+
+test('round 11: the Manager\'s thinking is counted through the turn (the cups), and starts over between turns', async () => {
+  const sim = new BigSim()
+  const turn = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  run(sim, turn, 2, 100)
+  expect(sim.life.thought).toBe(100)
+  // Working is not thinking: the count stays; thinking again adds to it.
+  run(sim, setMood(turn, 'work', 20_000), 20_000, 50)
+  expect(sim.life.thought).toBe(100)
+  run(sim, setMood(turn, 'think', 30_000), 30_000, 30)
+  expect(sim.life.thought).toBe(130)
+  // The turn is over: the cups go.
+  run(sim, endTurn(turn, 'answer', false, 40_000, 40_000), 40_000, 2)
+  expect(sim.life.thought).toBe(0)
 })

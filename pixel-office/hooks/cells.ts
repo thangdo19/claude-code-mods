@@ -83,30 +83,41 @@ export class CellCoder {
    * kept, so the office fits a pane a few rows short of its full height.
    */
   encode(sc: Scene, skip = 0, keep?: number): Cells {
-    const { w, h } = sc.fb
-    const all = Math.floor(h / 2)
-    const rows = Math.max(1, Math.min(keep ?? all - skip, all - skip))
+    const all = Math.floor(sc.fb.h / 2)
+    return this.window(sc, 0, skip * 2, sc.fb.w, Math.max(1, Math.min(keep ?? all - skip, all - skip)))
+  }
+
+  /**
+   * The part of `sc` `w` columns wide and `rows` rows tall, its top-left at pixel (`left`, `top`; `top` even): the
+   * camera's window, read straight from the full office (no copy of it first).
+   */
+  window(sc: Scene, left: number, top: number, w: number, rows: number): Cells {
+    const { w: sw, h: sh, p } = sc.fb
     const n = rows * w * 3
     if (this.next.length !== n) this.next = new Uint32Array(n)
     const out = this.next
-    const p = sc.fb.p
-    const base = skip * 2 * w
-    for (let r = 0, k = 0; r < rows; r++)
+    // (All of it inside the picture, as always in the pane: no check per pixel.)
+    const inside = left >= 0 && top >= 0 && left + w <= sw && top + rows * 2 <= sh
+    for (let r = 0, k = 0; r < rows; r++) {
+      const y = top + 2 * r
+      const ti = y * sw + left
       for (let x = 0; x < w; x++, k += 3) {
-        const ti = base + 2 * r * w + x
-        const bi = ti + w
-        const top = ti >= 0 && ti < p.length ? p[ti]! : -1
-        const bottom = bi >= 0 && bi < p.length ? p[bi]! : -1
-        const t = top < 0 ? DEFAULT : top
-        const b = bottom < 0 ? DEFAULT : bottom
+        const sx = left + x
+        const tp = inside || (sx >= 0 && sx < sw && y >= 0 && y < sh) ? p[ti + x]! : -1
+        const bp = inside || (sx >= 0 && sx < sw && y + 1 >= 0 && y + 1 < sh) ? p[ti + sw + x]! : -1
+        const t = tp < 0 ? DEFAULT : tp
+        const b = bp < 0 ? DEFAULT : bp
         out[k] = t === b ? SPACE : UPPER
-        out[k + 1] = (t === b ? b : t) & 0x1ffffff
+        out[k + 1] = t & 0x1ffffff
         out[k + 2] = b & 0x1ffffff
       }
+    }
+    const rowOff = top >> 1
     for (const c of sc.texts) {
-      const row = c.row - skip
-      if (row < 0 || row >= rows || c.x < 0 || c.x >= w) continue
-      const k = (row * w + c.x) * 3
+      const row = c.row - rowOff
+      const x = c.x - left
+      if (row < 0 || row >= rows || x < 0 || x >= w) continue
+      const k = (row * w + x) * 3
       out[k] = c.ch.charCodeAt(0)
       out[k + 1] = c.fg & 0x1ffffff
       out[k + 2] = c.bg & 0x1ffffff

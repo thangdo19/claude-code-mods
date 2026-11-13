@@ -58,6 +58,13 @@ export const FURNITURE = {
   stockings: { xs: [24, 38], y: 40 },
   typistDesk: { x: 49, y: 39, w: 15, h: 6 },
   typewriter: { x: 58, y: 39 },
+  // Round 11 (approved Nov 13 2026).
+  /** Two wet umbrellas leaning by the door on a rainy day: their left, their tips on the floor. */
+  umbrellas: { x: 10, y: 20 },
+  /** The Manager's empty cups: the first one's left and feet, at the desk's left end (left of the "Claude" nameplate). */
+  cups: { x: 23, y: 38 },
+  /** The Typist's finished pages: the stack's left and its lowest row (above the "Mary-Beth" nameplate's rows 38–39). */
+  pages: { x: 49, y: 37 },
 } as const satisfies Record<string, Box | At | readonly Box[] | readonly At[] | { xs: readonly number[]; y: number }>
 
 /** The front desks (agents' and the front-desk staff's), one every 16 px from the left; each part from its desk's left. */

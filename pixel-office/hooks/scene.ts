@@ -7,15 +7,16 @@ import { still, Scene } from './gfx/fb'
 import { board, boardWords, themeWords, type BoardItem } from './art/board'
 import { iconBubble, textBubble, thinkBubble } from './art/bubbles'
 import {
-  bossChair, cabinet, clock, coffeeMachine, desk, deskPhone, door, globe, monitor, nameplate, officeChair, plant, plate, rack, room, typewriter,
+  bossChair, cabinet, coffeeMachine, desk, deskPhone, door, globe, monitor, nameplate, officeChair, plant, plate, rack, room, typewriter,
   waterCooler,
 } from './art/furniture'
 import { LOOK, secLook, type Look } from './art/looks'
 import { P } from './art/palette'
 import { drawPerson, workFx, type Arms, type Face } from './art/people'
-import { NAME, ROLES, type Tone, type View } from './office'
+import { bottleLeft, NAME, ROLES, type Tone, type View } from './office'
 import { agentOf, isRole, secActor, type BigSim } from './walk'
-import { decorAt, DESK_KIND, DESK_OWNER, remote, skyAt } from './world'
+import { decorAt, DESK_KIND, DESK_OWNER, hourAt, minuteAt, rainyDay, remote, skyAt } from './world'
+import { bottle, catEyes, catHat, clockAt, clockHands, cups, pages, rainPane, slice, sparkle, sunPatch, sweat, umbrellas } from './art/round11'
 import { cake, callScreen, cat, confetti, doodle, gardenArt, holdNotes, parcel, plane, printer, skyPane, starFrame, testLamp } from './art/extras'
 import { deskDecor, plantCorner, sillSnow, stockings, wallDecor, windowFx, wreath } from './art/holidays'
 import { boardTheme } from './theme'
@@ -40,6 +41,11 @@ const BREAK_ARMS: Record<ActKind, Arms> = {
   sip: 'mug', mug: 'mug', phone: 'phone', game: 'type', coffee: 'mug', plant: 'water', chat: 'talk', visit: 'talk', host: 'talk',
   stretch: 'stretch', report: 'talk', tick: 'point', own: 'type', huddle: 'talk', ship: 'down', eat: 'eat', garden: 'water', hello: 'raise',
 }
+/** Round 11's numbers: a cup per 10 s of thinking (80 ticks), 4 cups and 6 pages at most, the sparkle's 2.5 s. */
+const CUP_TICKS = 80
+const CUPS_MOST = 4
+const PAGES_MOST = 6
+const SPARKLE_MS = 2500
 /** The test lamp (approved round 6): a shell command that runs tests. */
 const TESTS = /\b(test|tests|pytest|vitest|jest|spec|check)\b/
 /** Own work at the station (approved round 4): files in hand, the rack's keys, sorting the mail, the keys at the desk. */
@@ -64,9 +70,13 @@ const CHATS: readonly ActKind[] = ['chat', 'visit', 'host']
 /** The text row of a bubble over someone whose feet are on pixel row `feet`. */
 const bubbleRow = (feet: number) => Math.max(1, Math.floor((feet - 17) / 2))
 
-/** The whole office at frame `f` (4 a second) and tick `tick` (8 a second, for walking legs). */
-export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing?: string): Scene {
-  const sc = new Scene(BIG_COLS, BIG_ROWS * 2)
+/**
+ * The whole office at frame `f` (4 a second) and tick `tick` (8 a second, for walking legs). `into`: a Scene from an
+ * earlier call, drawn over (the pane keeps one, so a frame makes no new picture; its last frame is gone then).
+ */
+export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing?: string, into?: Scene): Scene {
+  const sc = into ?? new Scene(BIG_COLS, BIG_ROWS * 2)
+  if (into) into.reset()
   const fb = sc.fb
   const F = v.frozen ? 3 : f
   const draws: [number, () => void][] = []
@@ -105,11 +115,17 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   // (`still`: art that never changes is drawn once, then copied.)
   const U = FURNITURE
   still(fb, 'room', room)
+  const deco = decorAt(v.now)
+  // The window's sky by the time of day (approved round 6); night after 10 idle minutes still wins. A rainy day
+  // (approved round 11): by the date, never at night; a holiday's window (snow, fireworks, the rainbow) wins.
+  const sky = v.night ? 'night' : skyAt(v.now)
+  const rainy = sky !== 'night' && !deco.window && rainyDay(v.now)
+  // Sunlight on the floor by the window (approved round 11), under the furniture and the people: none in the rain.
+  if (sky !== 'night' && !rainy) sunPatch(fb, MOON_AT, sky)
   const open = sim.doorOpen()
   still(fb, 'door ' + open, f => door(f, U.door.x, U.door.y, U.door.w, U.door.h, open))
   // Holiday decorations (approved rounds 6 and 7): along the top of the wall, never over the frame, the rack, the
   // window or the clock's round face; a wreath on the closed door; holiday hats on everyone but the Janitor.
-  const deco = decorAt(v.now)
   const fr = U.frame
   if (deco.wall)
     wallDecor(
@@ -121,7 +137,10 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const hat = deco.hats ?? undefined
   /** A picture bubble sits above a holiday hat, not on it (round 9). */
   const lift = hat === 'party' ? 3 : hat ? 2 : 0
-  clock(fb, U.clock.x, U.clock.y, F)
+  // The wall clock tells the time (approved round 11).
+  const hour = hourAt(v.now)
+  const minute = minuteAt(v.now)
+  still(fb, 'clock ' + clockHands(hour, minute).join(' '), g => clockAt(g, U.clock.x, U.clock.y, hour, minute))
   // Employee of the month (approved round 6): whoever had the most jobs since the office opened.
   let star: Role | null = null
   for (const r of ROLES) if ((life.jobCount.get(r) ?? 0) > (star ? (life.jobCount.get(star) ?? 0) : 0)) star = r
@@ -144,10 +163,10 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   else if (meeting(v)) board(fb, B.x, B.y, B.w, B.h, true, F)
   else if (onBoard) themeWords(sc, U.boardWords.x, U.boardWords.y, U.boardWords.w, U.boardWords.h, onBoard)
   else still(fb, 'board', f => board(f, B.x, B.y, B.w, B.h, false, 0))
-  // The window by the time of day (approved round 6); night after 10 idle minutes still wins.
-  skyPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, v.night ? 'night' : skyAt(v.now), F)
+  skyPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, sky, F)
   if (deco.window) windowFx(fb, U.window.x, U.window.y, U.window.w, U.window.h, deco.window, F)
   if (deco.snowy && deco.window !== 'snow') sillSnow(fb, U.window.x, U.window.y, U.window.w, U.window.h)
+  if (rainy) rainPane(fb, U.window.x, U.window.y, U.window.w, U.window.h, F)
   // Thinking at the board (approved round 6, "Many ways to think"): doodles, more the longer the Manager stays.
   if (doodling) {
     const m = sim.actors.get('manager')!
@@ -157,6 +176,9 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   at(DEPTH.wall, () => {
     if (hereAt('chatA') && hereAt('chatB')) waterCooler(fb, U.cooler.x, U.cooler.y, true, F)
     else still(fb, 'cooler', f => waterCooler(f, U.cooler.x, U.cooler.y, false, 0))
+    // The bottle is as full as the memory is free (approved round 11); two wet umbrellas by the door on a rainy day.
+    bottle(fb, U.cooler.x, U.cooler.y, bottleLeft(v.context), F)
+    if (rainy) umbrellas(fb, U.umbrellas.x, U.umbrellas.y)
     U.cabinets.forEach((c, k) => {
       // The Archivist's cabinet opens on a job.
       if (k === 0 && busy('archivist')) cabinet(fb, c.x, c.y, c.w, c.h, true, F)
@@ -186,18 +208,33 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   )
   /** On hold, music notes rise from the Manager's hotline (approved round 6; set while the desks are drawn). */
   let holdMusic = false
-  // A turn of 2 minutes or more just ended: a party (approved round 6).
-  const party = v.mood === 'done' && /Done in ([2-9]|\d\d+)m/.test(v.line)
+  // Enough work just ended: a party (approved round 6; when, in office.ts: PARTY_TURN_MS).
+  const party = v.party
   // The office cat (approved round 6): on the windowsill, on a free desk, or out and about.
   const c = sim.cat
   const pose = c.pose()
   const k = c.desk()
-  if (pose === 'nap') at(DEPTH.catNap, () => cat(fb, U.catNap.x, U.catNap.y, 'nap', false, 0, F))
+  // At a party (approved round 11) the cat wears a tiny party hat and sits on the Manager's monitor: drawn there only,
+  // wherever it really is (it jumps there when the party starts and back when it ends).
+  if (party)
+    at(DEPTH.desks + 0.07, () => {
+      cat(fb, U.bossMonitor.x - 1, U.bossMonitor.y, 'sit', false, 0, F)
+      catHat(fb, U.bossMonitor.x + 2, U.bossMonitor.y - 7)
+    })
+  else if (pose === 'nap') at(DEPTH.catNap, () => cat(fb, U.catNap.x, U.catNap.y, 'nap', false, 0, F))
   else if (k >= 0) at(DEPTH.catOnDesk, () => cat(fb, k * FRONT_DESK.every + FRONT_DESK.cat.x, FRONT_DESK.cat.y, 'sit', false, 0, F))
   else {
     const [cx, cy] = c.at()
     at(cy, () => cat(fb, cx, cy, pose, c.right, c.walked >> 1, F))
   }
+  // On the desks (approved round 11): an empty cup for every 10 s the Manager has thought this turn (4 at most), a
+  // page for each of the Typist's edits this turn (6 at most).
+  const cupCount = Math.min(CUPS_MOST, Math.floor(life.thought / CUP_TICKS))
+  if (cupCount) at(DEPTH.desks + 0.06, () => cups(fb, U.cups.x, U.cups.y, cupCount))
+  if (v.edits) at(DEPTH.desks + 0.06, () => pages(fb, U.pages.x, U.pages.y, Math.min(PAGES_MOST, v.edits)))
+  // A test command just passed (approved round 11): sparkles round the green lamp. (Queued here: an `at` inside the
+  // wall's own draw would never run.)
+  if (it?.state === 'linger' && TESTS.test(it.full) && v.now - it.since < SPARKLE_MS) at(DEPTH.top, () => sparkle(fb, U.testLamp.x, U.testLamp.y, F))
   at(DEPTH.chairs, () => still(fb, 'chairs', f => U.chairs.forEach(c => officeChair(f, c.x, c.y, c.w, c.h))))
   at(DEPTH.desks, () => {
     const cd = U.courierDesk
@@ -320,6 +357,9 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
     let bubble: [string, Tone] | null = null
     /** On a job: hands hop and paper flies, so you can tell who works. */
     let working = false
+    /** Approved round 11: cheering at the party (a slice of cake in hand); a job just failed (a sweat drop). */
+    let cheer = false
+    let sweaty = false
     /** Something drawn over them (the parcel). */
     let extra: ((top: number, x: number, f: number) => void) | null = null
 
@@ -348,7 +388,10 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       const key = seat ? DEPTH.bossSeat : py
       const pose: Arms = walking ? (act === 'mug' ? 'walkMug' : 'walk') : arms
       const face = walking ? sim.facing(a) : act ? faceTo('manager', a.dest, px) : 'down'
-      at(key, () => drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager'), hat }))
+      at(key, () => {
+        drawPerson(fb, px, top, LOOK.manager, { seat, f: walking ? walkStep(a) : F, arms: pose, eyes, smile, face, talk: talkOf('manager'), hat })
+        if (party && !walking) slice(fb, px, top, F)
+      })
       const b = MANAGER_BUBBLE[v.mood]
       if (seat) {
         if (act) {
@@ -409,7 +452,10 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
           working = true
           arms = away ? 'phone' : role === 'archivist' ? (/^Search|^Find/.test(w.full) ? 'magnify' : 'folder') : role === 'courier' ? 'phone' : (WORK_ARMS[role] ?? 'type')
           bubble = told ? null : [life.hold(role, w.short, sim.tick), '']
-        } else if (w.state === 'error') bubble = told ? null : [life.hold(role, w.short, sim.tick), 'bad']
+        } else if (w.state === 'error') {
+          bubble = told ? null : [life.hold(role, w.short, sim.tick), 'bad']
+          sweaty = true
+        }
         // Just finished: a sip at the station until they report or take up their own things.
         else arms = act ? BREAK_ARMS[act] : 'mug'
       } else if (act) arms = BREAK_ARMS[act]
@@ -432,6 +478,7 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       if (party && !(w && w.state === 'work') && !walking) {
         arms = 'up'
         smile = true
+        cheer = true
       }
       // At the desk the Courier calls on the desk phone (the smartphone only away from it).
       if (role === 'courier' && arms === 'phone' && here && a.dest === 'courier') {
@@ -454,6 +501,8 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       drawPerson(fb, px, top, person, { seat: sitting, f: pf, arms: pose, smile, eyes, seed: a.id.length, busy: busyNow, face, talk, hat: a.id === 'janitor' ? undefined : hat })
       if (busyNow) workFx(fb, px, top, pf)
       if (extra && face !== 'up') extra(top, px, pf)
+      if (cheer) slice(fb, px, top, pf)
+      if (sweaty && here) sweat(fb, px, top, F)
     })
     // The IT girl's bubble starts right of the board, so it never covers the to-do words.
     const minX = a.id === 'it' && a.dest === 'it' ? IT_BUBBLE_X : 0
@@ -504,10 +553,12 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
         return k >= 0 && k <= 10 && k !== 5 && x <= MOON_AT.x - k && x >= MOON_AT.x - 4 - k
       },
     )
+    // The napping cat's eyes glow in the dark (approved round 11): drawn after the lights go off.
+    if (pose === 'nap') catEyes(sc, U.catNap.x, U.catNap.y, F)
   }
   return sc
 }
-/** In the dark: the colors that glow where they are (the cat on the sill does not; the window's frame does not). */
+/** In the dark: the colors that glow where they are (the cat on the sill does not, but for its eyes; the window's frame does not). */
 const CAT_INK = new Set(['#f0a050', '#c06a2a', '#2a2230', '#f08aa0', '#fff1e0'].map(C))
 const WINDOW_FRAME = C('#eef1f4')
 /** The rack's lights and the test lamp. */

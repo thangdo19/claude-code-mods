@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { decorAt, easter, lunchAt, setClock, skyAt } from '../hooks/world'
+import { dayNo, decorAt, easter, lunchAt, minuteAt, rainyDay, rainyOn, setClock, skyAt } from '../hooks/world'
 
 import { TEST_CLOCK } from './helpers'
 
@@ -17,6 +17,32 @@ test('the window follows the hour, lunch is at noon', async () => {
   expect([5, 6, 9, 10, 12, 16, 17, 19, 20, 23].map(h => at(h)[0])).toEqual(['night', 'morning', 'morning', 'day', 'day', 'day', 'sunset', 'sunset', 'night', 'night'])
   expect([11, 12, 13].map(h => at(h)[1])).toEqual([false, true, false])
   setClock(TEST_CLOCK)
+})
+
+test('the minute and the rain (approved round 11): a pinned clock gives the minute; about one day in five rains, never 4 in a row', async () => {
+  // Pinned to an hour alone the clock is on the hour: pinned frames never change with the real minute.
+  setClock({ hour: 15, date: [2026, 6, 1] })
+  expect(minuteAt(123_456_789)).toBe(0)
+  setClock({ hour: 6, minute: 30, date: [2026, 6, 1] })
+  expect(minuteAt(0)).toBe(30)
+  // Rain goes by the date alone: 2026–2030 day by day.
+  let days = 0, rainy = 0, run = 0, longest = 0
+  for (let t = dayNo(2026, 1, 1); t < dayNo(2031, 1, 1); t++) {
+    const d = new Date(t * 86_400_000)
+    const wet = rainyOn(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate())
+    days++
+    run = wet ? run + 1 : 0
+    if (wet) rainy++
+    longest = Math.max(longest, run)
+  }
+  expect(rainy / days).toBeGreaterThan(0.17)
+  expect(rainy / days).toBeLessThan(0.23)
+  expect(longest).toBe(3)
+  // The tests' June day is dry (the golden frames show the sun); Nov 14 2026 is wet, whatever the hour.
+  setClock({ hour: 3, date: [2026, 11, 14] })
+  expect(rainyDay(0)).toBe(true)
+  setClock(TEST_CLOCK)
+  expect(rainyDay(0)).toBe(false)
 })
 
 test('holidays by date (approved round 7): every US holiday plus Tết, Monday ones for the long weekend', async () => {

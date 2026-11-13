@@ -2,9 +2,11 @@ import { expect, test } from 'claude-code/testing'
 
 import { renderBig } from '../hooks/scene'
 import { BigSim } from '../hooks/walk'
-import { EMPTY, NIGHT_MS, startJob, startTurn, view } from '../hooks/office'
+import { EMPTY, endJob, endTurn, NIGHT_MS, PARTY_TURN_MS, startJob, startTurn, view } from '../hooks/office'
+import { FURNITURE } from '../hooks/layout'
+import type { Office } from '../types'
 
-import { setClock } from '../hooks/world'
+import { rainyDay, setClock } from '../hooks/world'
 
 import { run, TEST_CLOCK, todoTurn } from './helpers'
 
@@ -75,4 +77,102 @@ test('the board names the holiday when it has no to-dos (approved round 10); to-
   expect([2, 3, 4, 5].map(r => words(sc, r, 32, 45))).toEqual(['Veterans Day', 'Nov 11', 'Christmas', 'Nov 1-Jan 1'])
   expect(words(sc, 0, 31, 46)).toBe('')
   expect(words(sc, 26, 32, 47)).toBe('')
+})
+
+/** The picture's pixel at (x, y), and the letters of a text row. */
+const px = (sc: ReturnType<typeof renderBig>, x: number, y: number) => sc.fb.p[y * 64 + x]
+const letters = (sc: ReturnType<typeof renderBig>, row: number) => sc.texts.filter(t => t.row === row).sort((a, b) => a.x - b.x).map(t => t.ch).join('')
+
+test('round 11 on the desks: 4 cups and 6 pages leave every name tag whole; a nearly full memory shows red in the bottle', async () => {
+  const sim = new BigSim()
+  const turn = startTurn({ ...EMPTY, lastActivity: 1 }, 1)
+  const bare = renderBig(run(sim, turn, 2, 40), sim, 1, 2)
+  expect(letters(bare, 19)).toBe('JohnClaudeMary-Beth')
+  // 40 s of thinking and six edits later.
+  let o: Office = { ...turn, context: 97 }
+  for (let k = 0; k < 6; k++) {
+    o = endJob(startJob(o, { id: 'e' + k, role: 'typist', short: 'a.ts', full: 'Edit a.ts', startedAt: 2 }), 'e' + k, 'typist', { short: 'a.ts', full: 'Edit a.ts', err: false, denied: false, endedAt: 3 })
+  }
+  sim.life.thought = 320
+  const sc = renderBig(view(o, 60_000), sim, 1, 2)
+  expect(letters(sc, 19)).toBe('JohnClaudeMary-Beth')
+  // Two cups side by side, two more piled on them; the pages' stack is six rows high.
+  const C = FURNITURE.cups
+  for (const [dx, dy] of [[0, 0], [3, 0], [0, -2], [3, -2]] as const) expect([px(sc, C.x + dx, C.y + dy - 1), px(sc, C.x + dx, C.y + dy)]).toEqual([0x6b4535, 0xf4f6f8])
+  const G = FURNITURE.pages
+  expect([0, 1, 2, 3, 4, 5, 6].map(i => px(sc, G.x, G.y - i) === px(bare, G.x, G.y - i))).toEqual([false, false, false, false, false, false, true])
+  // The bottle: full while the memory is unknown, its last row red at 97%.
+  const B = FURNITURE.cooler
+  expect([px(bare, B.x + 1, B.y + 4), px(sc, B.x + 1, B.y + 4)]).toEqual([0x79c4ef, 0xf08a8a])
+})
+
+test('round 11 at the window: sunlight on the floor by day, none at night or in the rain; rain only with no holiday in the window', async () => {
+  const idle = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  const shot = (clock: Parameters<typeof setClock>[0], now = 2) => {
+    setClock(clock)
+    const sim = new BigSim()
+    return renderBig(run(sim, idle, now, 2), sim, 4, 2)
+  }
+  // (56, 22) is the patch's top right corner; the umbrellas lean by the door.
+  const U = FURNITURE.umbrellas
+  const floor = (sc: ReturnType<typeof renderBig>) => px(sc, 56, 22)
+  const umbrella = (sc: ReturnType<typeof renderBig>) => px(sc, U.x, U.y - 5) === 0xd63a3a
+  /** The rainy sky and its drops. */
+  const RAIN = [0x8496ad, 0x6f8198, 0xd6e6f5, 0xb9cde2]
+  const wet = (sc: ReturnType<typeof renderBig>) => RAIN.includes(px(sc, FURNITURE.window.x + 1, FURNITURE.window.y + 1)!)
+  const evening = shot({ hour: 22, date: [2026, 6, 1] })
+  const day = shot({ hour: 10, date: [2026, 6, 1] })
+  const sunset = shot({ hour: 18, date: [2026, 6, 1] })
+  expect(floor(day) !== floor(evening) && floor(sunset) !== floor(evening) && floor(sunset) !== floor(day)).toBe(true)
+  expect([umbrella(day), wet(day)]).toEqual([false, false])
+  // A rainy day (Nov 14 2026): no sun, a gray sky, two umbrellas; not after dark.
+  const rain = shot({ hour: 10, date: [2026, 11, 14] })
+  expect([floor(rain) === floor(evening), umbrella(rain), wet(rain)]).toEqual([true, true, true])
+  expect(umbrella(shot({ hour: 22, date: [2026, 11, 14] }))).toBe(false)
+  // Dec 8 2026 is rainy by its date, but December's snow has the window: no rain, no umbrellas, the sun stays.
+  setClock({ hour: 10, date: [2026, 12, 8] })
+  expect(rainyDay(0)).toBe(true)
+  const snow = shot({ hour: 10, date: [2026, 12, 8] })
+  expect([umbrella(snow), wet(snow), floor(snow) === floor(day)]).toEqual([false, false, true])
+  setClock(TEST_CLOCK)
+})
+
+test('round 11: the clock tells the time; the napping cat\'s eyes glow only in the dark', async () => {
+  const idle = { ...EMPTY, lastActivity: 1, moodAt: 1 }
+  const K = FURNITURE.clock
+  const face = (hour: number, minute: number) => {
+    setClock({ hour, minute, date: [2026, 6, 1] })
+    const sim = new BigSim()
+    const sc = renderBig(run(sim, idle, 2, 2), sim, 4, 2)
+    // The face's 3 × 3 pixels: R the red minute hand, H the dark hour hand and the middle, . white.
+    return [1, 2, 3].map(y => [1, 2, 3].map(x => (px(sc, K.x + x, K.y + y) === 0xf6f7f9 ? '.' : px(sc, K.x + x, K.y + y) === px(sc, K.x + 2, K.y + 2) ? 'H' : 'R')).join('')).join('/')
+  }
+  // 3:00: the hour hand right, the minute hand up. 6:30: both down (the hour hand on top). 10:10 at night.
+  expect([face(3, 0), face(6, 30), face(22, 10)]).toEqual(['.R./.HH/...', '.../.H./.H.', 'H.R/.H./...'])
+  setClock(TEST_CLOCK)
+  // The cat naps on the sill all night: by day no pixel is the eyes' green; in the dark its two eyes are.
+  const eyes = (sc: ReturnType<typeof renderBig>) => sc.fb.p.filter(c => c === 0xd8ff7a).length
+  const lit = new BigSim()
+  expect(eyes(renderBig(run(lit, idle, 2, 2), lit, 0, 2))).toBe(0)
+  const sim = new BigSim()
+  const v = run(sim, idle, NIGHT_MS + 10, 2)
+  expect([sim.dark(v), sim.cat.pose(), eyes(renderBig(v, sim, 0, 2))]).toEqual([true, 'nap', 2])
+})
+
+test('round 11 at a party: a slice of cake in every raised hand, the cat in its hat on the Manager\'s monitor', async () => {
+  const o = endTurn(startTurn({ ...EMPTY, lastActivity: 1 }, 1), 'answer', false, PARTY_TURN_MS, PARTY_TURN_MS)
+  const sim = new BigSim()
+  const v = run(sim, o, PARTY_TURN_MS + 1, 4)
+  expect(v.party).toBe(true)
+  const sc = renderBig(v, sim, 2, 4)
+  // The hat's yellow tip is 7 rows over the monitor's top; cherries: one for everyone in the office.
+  const M = FURNITURE.bossMonitor
+  expect(px(sc, M.x + 2, M.y - 7)).toBe(0xffd84a)
+  expect(sim.actors.size).toBe(6)
+  let cherries = 0
+  for (const a of sim.actors.values()) {
+    const [x, y] = sim.at(a)
+    for (let dy = -16; dy <= -11; dy++) if (px(sc, x + 7, y + dy) === 0xe04b4b) cherries++
+  }
+  expect(cherries).toBeGreaterThan(3)
 })

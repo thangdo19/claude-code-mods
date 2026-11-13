@@ -5,6 +5,7 @@ import { renderBig } from '../hooks/scene'
 import { BIG_COLS, BIG_ROWS } from '../hooks/layout'
 import { BigSim } from '../hooks/walk'
 import { view } from '../hooks/office'
+import { Camera } from '../hooks/camera'
 
 import { busy } from './helpers'
 
@@ -34,4 +35,22 @@ test('the designed office (64 x 31) is used when it fits: solid cells are spaces
   sc.fb.p[0] = 0x123456
   expect(coder.encode(sc).cells).not.toBe(c.cells)
   expect(coder.encode(sc).cells).toBe(bigCells(sc).cells)
+})
+
+test("the camera's window read straight from the full office is the copy's cells, wherever it looks", async () => {
+  const v = view(busy(), 2)
+  const sim = new BigSim()
+  sim.sync(v)
+  const sc = renderBig(v, sim, 1, 2)
+  const cam = new Camera()
+  for (const [left, top, cols, rows] of [[0, 0, 64, 16], [12, 30, 40, 12], [24, 14, 40, 12], [0, 30, 64, 16], [30, 46, 34, 8]] as const) {
+    cam.left = left
+    cam.top = top
+    expect(new CellCoder().window(sc, left, top, cols, rows)).toEqual(bigCells(cam.view(sc, cols, rows * 2)))
+  }
+  // Off the picture (never so in the pane): the terminal's own color there.
+  const off = new CellCoder()
+  off.window(sc, 60, 60, 8, 2)
+  const w = off.words
+  for (let i = 0; i < 16; i++) if (i % 8 >= 4 || i >= 8) expect([w[i * 3], w[i * 3 + 1], w[i * 3 + 2]]).toEqual([0x20, 0x1000000, 0x1000000])
 })

@@ -4,11 +4,11 @@
 import type { Done, Job, LastJob, Mood, Office, Role, Sec, SecStatus, Todo } from '../types'
 import { fmtDuration, plain } from './labels'
 import { isMeeting, isStream, isUrgent, isWork } from './moods'
-import { remote } from './world'
+import { AGENT_DESKS, remote } from './world'
 
 export const EMPTY: Office = {
   mood: 'idle', moodText: null, moodAt: 0, plan: false, turnActive: false, jobs: [], last: {}, recent: [], bg: [],
-  secs: [], todos: null, compacting: false, lastActivity: 0, order: 0,
+  secs: [], todos: null, compacting: false, lastActivity: 0, order: 0, workMs: 0, party: false,
 }
 
 /** A worker with nothing left to do counts as just finished this long (they report it, then are free). */
@@ -19,8 +19,17 @@ export const BRIEF_MS = 2_000
 export const CHEER_MS = 4_000
 /** A red ✗ stays this long. */
 export const ERROR_MS = 5_000
-/** "Done!" shows this long, then the Manager naps. */
+/** "Done!" shows this long, then the Manager is on a break. */
 export const DONE_MS = 8_000
+/**
+ * The party (round 6; easier to earn, Nov 2026): a done turn of PARTY_TURN_MS or more, or PARTY_TOTAL_MS of work
+ * over the turns since the last party. "Done!" then lasts PARTY_MS. A party the next turn cut off before
+ * PARTY_SEEN_MS is owed: the next done turn has it.
+ */
+export const PARTY_TURN_MS = 120_000
+export const PARTY_TOTAL_MS = 300_000
+export const PARTY_MS = 15_000
+export const PARTY_SEEN_MS = 4_000
 /** After Esc everyone stands still this long, then walks out. */
 export const STOP_MS = 3_000
 /** Night falls in the window after this long with nothing happening. */
@@ -71,7 +80,7 @@ export const DOT = {
   // The agents' eight looks (LOOK.sec in art/looks.ts, same order).
   sec: ['#ff5f5f', '#5fafff', '#5f5fd7', '#afd700', '#00d7d7', '#a0a8b4', '#d75fd7', '#af005f'],
 } as const
-/** How many looks agents have: up to 8 can be in the office at once (4 desks, 3 in line, 1 walking out). */
+/** How many looks agents have: more than the 6 that can be in the office at once (2 desks, 3 in line, 1 walking out). */
 export const SEC_LOOKS = DOT.sec.length
 export const secDot = (n: number): string => DOT.sec[((n % SEC_LOOKS) + SEC_LOOKS) % SEC_LOOKS] ?? DOT.wait
 
@@ -79,26 +88,40 @@ export const secDot = (n: number): string => DOT.sec[((n % SEC_LOOKS) + SEC_LOOK
 
 export const setMood = (o: Office, mood: Mood, now: number, text: string | null = null): Office => ({ ...o, mood, moodText: text, moodAt: now, lastActivity: now })
 
-/** A main turn starts: the Manager wakes; finished secretaries and old results are gone. */
-export const startTurn = (o: Office, now: number): Office => ({
-  ...o,
-  turnActive: true,
-  mood: 'think',
-  moodText: null,
-  moodAt: now,
-  lastActivity: now,
-  jobs: [],
-  last: {},
-  recent: [],
-  secs: o.secs.filter(s => s.status === 'run' || s.status === 'idle'),
-})
-
-/** A main turn ends: answered, stopped with Esc, or failed. */
-export const endTurn = (o: Office, reason: string, aborted: boolean, durationMs: number, now: number): Office => {
-  const mood: Mood = aborted || reason === 'aborted' ? 'stopped' : reason === 'error' ? 'hold' : 'done'
-  const text = mood === 'done' ? 'Done in ' + fmtDuration(durationMs) : mood === 'hold' ? (o.mood === 'hold' ? o.moodText : 'Stopped on an error') : null
-  return { ...o, turnActive: false, jobs: [], compacting: false, mood, moodText: text, moodAt: now, lastActivity: now }
+/**
+ * A main turn starts: the Manager wakes; old results are gone. (Finished secretaries stay on record: one woken again
+ * later gets its desk back; `view` hides them once they have cheered.)
+ */
+export const startTurn = (o: Office, now: number): Office => {
+  // The party: seen, the count of work starts over; cut off by this turn before anyone saw it, it is owed.
+  const seen = o.mood !== 'done' || now - o.moodAt >= PARTY_SEEN_MS
+  const workMs = !o.party ? (o.workMs ?? 0) : seen ? 0 : Math.max(o.workMs ?? 0, PARTY_TOTAL_MS)
+  return { ...o, turnActive: true, mood: 'think', moodText: null, moodAt: now, lastActivity: now, jobs: [], last: {}, recent: [], workMs, party: false }
 }
+
+/** A main turn ends: answered, stopped with Esc, refused, or failed. */
+export const endTurn = (o: Office, reason: string, aborted: boolean, durationMs: number, now: number): Office => {
+  // (A refusal is no "Done!": the Manager has something to tell you, as after an error.)
+  const mood: Mood = aborted || reason === 'aborted' ? 'stopped' : reason === 'error' || reason === 'refusal' ? 'hold' : 'done'
+  const text =
+    mood === 'done' ? 'Done in ' + fmtDuration(durationMs)
+    : mood === 'hold' ? (o.mood === 'hold' ? o.moodText : reason === 'refusal' ? 'On hold · refused' : 'Stopped on an error')
+    : null
+  // Every turn's time counts toward the party (stopped and failed ones too); only a done turn has one. (By the
+  // seconds the line shows: "Done in 2m 0s" is a party.)
+  const workMs = (o.workMs ?? 0) + Math.max(0, durationMs)
+  const party = mood === 'done' && (Math.round(durationMs / 1000) * 1000 >= PARTY_TURN_MS || workMs >= PARTY_TOTAL_MS)
+  return { ...o, turnActive: false, jobs: [], compacting: false, mood, moodText: text, moodAt: now, lastActivity: now, workMs, party }
+}
+
+/**
+ * A tool call ended (`agent`: whose call, undefined for the Manager's own), so the dialog that waited on it is
+ * answered: "Your OK?" asked for a call of `askedBy` (undefined: the Manager's own) goes when a call of theirs ends;
+ * "Question?" put up by a notice (an MCP server or a teammate asking; `asking`: an AskUserQuestion call is open, which
+ * ends its own) goes when one of the Manager's calls ends.
+ */
+export const afterCall = (o: Office, now: number, agent: string | undefined, askedBy: string | undefined, asking: boolean): Office =>
+  (o.mood === 'permission' && agent === askedBy) || (o.mood === 'ask' && agent === undefined && !asking) ? setMood(o, 'work', now) : o
 
 export const startJob = (o: Office, job: Job): Office => ({ ...o, jobs: [...o.jobs.filter(j => j.id !== job.id), job].slice(-40), lastActivity: job.startedAt })
 
@@ -117,19 +140,22 @@ export const endJob = (o: Office, id: string, role: Role, last: LastJob): Office
   // (A briefing is not paced: it is busy BRIEF_MS anyway.)
   const recent: Done[] = job?.brief
     ? (o.recent ?? [])
-    : [...(o.recent ?? []), { role, short: last.short, full: last.full, startedAt: job?.startedAt ?? last.endedAt, endedAt: last.endedAt }].slice(-MAX_RECENT)
+    : [...(o.recent ?? []), { role, short: last.short, full: last.full, startedAt: job?.startedAt ?? last.endedAt, endedAt: last.endedAt, ...(last.err || last.denied ? { err: true } : {}) }].slice(-MAX_RECENT)
   return { ...o, jobs: o.jobs.filter(j => j.id !== id), last: { ...o.last, [role]: done }, recent, lastActivity: last.endedAt }
 }
 
 /** A job as shown: from `s` to `e`. */
 type Shown = { short: string; full: string; s: number; e: number }
 
-/** A role's jobs (this turn's finished ones and those running) as shown at a human pace. */
-function paced(o: Office, role: Role, now: number): Shown[] {
+/**
+ * A role's jobs (this turn's finished ones and those running) as shown at a human pace. A failure is not paced (it
+ * shows at once, as it is, and never as done), and it ends the show of what finished before it (`failedAt`).
+ */
+function paced(o: Office, role: Role, now: number, failedAt: number): Shown[] {
   // The turn is over: what was left ends with it (never before the job itself did).
   const cut = o.turnActive ? Infinity : o.moodAt
   const all = [
-    ...(o.recent ?? []).filter(d => d.role === role).map(d => ({ short: d.short, full: d.full, start: d.startedAt, end: d.endedAt })),
+    ...(o.recent ?? []).filter(d => d.role === role && !d.err && d.endedAt > failedAt).map(d => ({ short: d.short, full: d.full, start: d.startedAt, end: d.endedAt })),
     ...o.jobs.filter(j => j.role === role && !j.brief && now - j.startedAt < STALE_MS).map(j => ({ short: j.short, full: j.full, start: j.startedAt, end: Infinity })),
   ].sort((a, b) => a.start - b.start)
   let free = -Infinity
@@ -147,13 +173,22 @@ function paced(o: Office, role: Role, now: number): Shown[] {
   return out
 }
 
+/** At most MAX_SECS on record: the oldest finished ones go first (never one still working or waiting, while any finished is left). */
+const capSecs = (secs: Sec[]): Sec[] => {
+  while (secs.length > MAX_SECS) {
+    const i = secs.findIndex(s => s.status === 'done' || s.status === 'fail')
+    secs.splice(Math.max(0, i), 1)
+  }
+  return secs
+}
+
 export const addSec = (o: Office, sec: Omit<Sec, 'order'>): Office => {
   const prev = o.secs.find(s => s.id === sec.id)
   const next: Sec = { ...sec, order: prev?.order ?? o.order }
   return {
     ...o,
     order: prev ? o.order : o.order + 1,
-    secs: [...o.secs.filter(s => s.id !== sec.id), next].slice(-MAX_SECS),
+    secs: capSecs([...o.secs.filter(s => s.id !== sec.id), next]),
     lastActivity: sec.startedAt,
   }
 }
@@ -221,11 +256,23 @@ export type View = {
   night: boolean
   workers: Partial<Record<Role, Worker>>
   janitor: boolean
+  /** A party is on: the turn that just ended earned one (see PARTY_TURN_MS), for as long as "Done!" shows. */
+  party: boolean
   /** Secretaries in the office now: working, waiting for a message, or just finished. */
   secs: Sec[]
   todos: Todo[] | null
   bg: string[]
+  /** The Typist's finished edits this turn, failed and refused ones left out (round 11: pages pile up on the desk). */
+  edits: number
+  /** How full the memory (context) is, 0–100 (round 11: the cooler's bottle); 0 while unknown. */
+  context: number
 }
+
+/**
+ * Round 11: the rows of water left in the cooler's bottle (4 full … 0 empty) when the memory is `used` percent full.
+ * The stored figure changes only when this does.
+ */
+export const bottleLeft = (used: number): number => Math.max(0, Math.min(4, Math.round(((100 - used) / 100) * 4)))
 
 const plural = (n: number, one: string, many: string) => n + ' ' + (n === 1 ? one : many)
 
@@ -233,7 +280,7 @@ const plural = (n: number, one: string, many: string) => n + ' ' + (n === 1 ? on
 export function realMood(o: Office, now: number): ShownMood {
   const since = now - o.moodAt
   let mood: ShownMood = o.mood
-  if (mood === 'done' && since > DONE_MS) mood = 'idle'
+  if (mood === 'done' && since > (o.party ? PARTY_MS : DONE_MS)) mood = 'idle'
   if (mood === 'stopped' && since > STOP_MS) mood = 'idle'
   if (!o.turnActive && isStream(mood)) mood = 'idle'
   if (o.plan && isStream(mood)) mood = 'plan'
@@ -250,6 +297,9 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
   const night = !o.turnActive && o.lastActivity > 0 && now - o.lastActivity > NIGHT_MS
 
   const workers: Partial<Record<Role, Worker>> = {}
+  /** When each worker's last failure this turn ended. */
+  const lastFailure: Partial<Record<Role, number>> = {}
+  for (const d of o.recent ?? []) if (d.err) lastFailure[d.role] = Math.max(lastFailure[d.role] ?? -Infinity, d.endedAt)
   for (const role of ROLES) {
     const mine = o.jobs.filter(j => j.role === role && now - j.startedAt < STALE_MS)
     // A briefing is work for BRIEF_MS; then it counts as finished, though its call still runs.
@@ -258,6 +308,9 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
     const prev = o.last[role]
     const last: LastJob | undefined =
       briefed && (!prev || prev.endedAt < briefEnd(briefed)) ? { short: briefed.short, full: briefed.full, err: false, denied: false, endedAt: briefEnd(briefed) } : prev
+    // A failure (or your "no") shows red for ERROR_MS and is never "just done": no ✓, no report, no green lamp.
+    const failed = !!last && (last.err || last.denied)
+    const failedAt = Math.max(failed ? last!.endedAt : -Infinity, lastFailure[role] ?? -Infinity)
     const newest = jobs[jobs.length - 1]
     if (newest) {
       const first = Math.min(...jobs.map(j => j.startedAt))
@@ -266,16 +319,16 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
       const short = jobs.length < 2 ? newest.short : jobs.every(j => j.brief) ? many('agents') : many(newest.short)
       workers[role] = { role, state: 'work', short, full: newest.full, jobs: jobs.map(j => j.full), since: first }
       if (jobs.every(j => j.brief)) workers[role]!.note = 'brief'
-    } else if (last && (last.err || last.denied) && now - last.endedAt < ERROR_MS) {
+    } else if (last && failed && now - last.endedAt < ERROR_MS) {
       workers[role] = { role, state: 'error', short: last.denied ? 'No!' : 'Failed', full: (last.denied ? '✗ you said no: ' : '✗ failed: ') + last.full, jobs: [], since: last.endedAt }
-    } else if (last && now - last.endedAt < LINGER_MS) {
+    } else if (last && !failed && now - last.endedAt < LINGER_MS) {
       workers[role] = { role, state: 'linger', short: '', full: '✓ ' + last.full, jobs: [], since: last.endedAt }
     }
     // The human pace: each job shows a while, a burst one after another. A failure shows at once, as it is; so does a
     // briefing (busy BRIEF_MS anyway).
     const real = workers[role]
     if (real?.state === 'error' || jobs.some(j => j.brief)) continue
-    const shown = paced(o, role, now)
+    const shown = paced(o, role, now, failedAt)
     const on = shown.filter(j => j.s <= now && now < j.e)
     const top = on[on.length - 1]
     const ended = shown.filter(j => j.e <= now).reduce<Shown | null>((a, j) => (a && a.e >= j.e ? a : j), null)
@@ -339,7 +392,9 @@ export function view(o: Office, now: number, calm?: (real: ShownMood) => ShownMo
     line = 'Stepped out while the Janitor cleans'
     tone = ''
   }
-  return { now, mood, planning: o.plan, line, tone, frozen, night, workers, janitor: o.compacting, secs, todos: o.todos, bg: o.bg }
+  let edits = 0
+  for (const d of o.recent ?? []) if (d.role === 'typist' && !d.err) edits++
+  return { now, mood, planning: o.plan, line, tone, frozen, night, workers, janitor: o.compacting, party: !!o.party && mood === 'done', secs, todos: o.todos, bg: o.bg, edits, context: o.context ?? 0 }
 }
 
 /* ===== the list under the office ===== */
@@ -369,8 +424,9 @@ export function freeWords(v: View): string {
  * The list (approved round 4: "Everyone, fixed order"): the Manager, then every staff member on their own line, always,
  * in the same order — their job, what they just did, or what they do meanwhile (`doing`; without it, `freeWords`) —
  * then the Janitor, the agents at desks, the line at the door, the to-do count.
- * `seated` is the secretaries at desks in desk order; without it the first four are. `lookOf` gives an agent's
- * look in the picture, so their dot matches their clothes.
+ * `seated` is the secretaries at desks in desk order; without it (no picture) the first two are, at the agents' desks
+ * in the order they are taken (`AGENT_DESKS`). `lookOf` gives an agent's look in the picture, so their dot matches
+ * their clothes.
  */
 export function lines(
   v: View, seated?: readonly (string | null)[], doing?: (r: Role) => string, lookOf?: (id: string) => number | undefined, closing = false,
@@ -394,8 +450,8 @@ export function lines(
     if (r === 'it' && v.bg.length) out.push({ dot: '', who: '', what: '└ ' + plural(v.bg.length, 'command', 'commands') + ' running in background', tone: 'idle', rank: 6 })
   }
   if (v.janitor) out.push({ dot: DOT.janitor, who: 'Janitor', what: 'Tidying memory (compacting)', tone: '', rank: 3 })
-  const atDesk = seated ? v.secs.filter(s => seated.includes(s.id)) : v.secs.slice(0, 4)
-  const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : atDesk.indexOf(s))
+  const atDesk = seated ? v.secs.filter(s => seated.includes(s.id)) : v.secs.slice(0, AGENT_DESKS.length)
+  const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : AGENT_DESKS[atDesk.indexOf(s)]!)
   for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b)))
     out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s), rank: secRank(s) })
   const waiting = v.secs.length - atDesk.length
@@ -418,8 +474,7 @@ export const DOT_W = 2
 const MOST_ROWS = 3
 
 /** A character's width in terminal cells: 2 for wide (CJK, most emoji), 0 for accents and joiners, else 1. */
-export const cellWidth = (ch: string): number => {
-  const c = ch.codePointAt(0) ?? 0
+const widthOf = (c: number): number => {
   if ((c >= 0x300 && c <= 0x36f) || c === 0x200d || (c >= 0xfe00 && c <= 0xfe0f)) return 0
   if (
     (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
@@ -429,7 +484,22 @@ export const cellWidth = (ch: string): number => {
     return 2
   return 1
 }
-export const textWidth = (s: string): number => Array.from(s).reduce((n, ch) => n + cellWidth(ch), 0)
+export const cellWidth = (ch: string): number => widthOf(ch.codePointAt(0) ?? 0)
+/** A text's width in terminal cells (character by character, with no list of them made). */
+export const textWidth = (s: string): number => {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x300) n++
+    else if (c >= 0xd800 && c <= 0xdfff) {
+      // Half of a pair (an emoji): the two count as one character.
+      const cp = s.codePointAt(i)!
+      n += widthOf(cp)
+      if (cp > 0xffff) i++
+    } else n += widthOf(c)
+  }
+  return n
+}
 
 /** The longest start of `s` at most `n` cells wide. */
 const take = (s: string, n: number): string => {
@@ -449,6 +519,8 @@ const take = (s: string, n: number): string => {
  */
 export function wrapLine(l: Line, width: number, most = MOST_ROWS): Line[] {
   const room = Math.max(8, width - DOT_W - WHO_W)
+  // (Most lines fit one row as they are.)
+  if (textWidth(l.what) <= room) return [{ ...l, what: l.what.trimEnd() }]
   const rows: string[] = []
   let cur = ''
   for (const word of l.what.split(/(?<= )|(?<=\/)/)) {

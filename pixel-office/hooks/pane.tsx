@@ -7,6 +7,7 @@ import { DOT_W, fitRows, lines, view, WHO_W, type Line, type Tone } from './offi
 import { BIG_COLS, BIG_ROWS } from './layout'
 import { CAM_COLS, CAM_ROWS } from './camera'
 import { change, load, onTick, rt, type Shape } from './loop'
+import { measureNow } from './events'
 
 /** The pane's id (the same as `PANE` in loop.ts; the mod's scan wants it written in the file that uses it). */
 const PANE = 'office'
@@ -58,6 +59,7 @@ export function pane(on: On): void {
         // A new session (approved round 7): the office opens, everyone walks in from the door.
         rt.sim.opening = true
       }
+      await measureNow($)
       await $.command.register({ name: 'office', description: 'Show the pixel office in the side panel' })
       // No screen (claude -p): nothing to draw, so no timer and no pane.
       if (e.isInteractive === false) return result
@@ -87,6 +89,8 @@ export function pane(on: On): void {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // (Read every time, though `rt.latest` has it: the read is what makes a stored change draw the pane again, and a
+    // pane with only the list has no tick to do it.)
     const o = await load($)
     const now = await $.clock.now()
     const v = view(o, now, real => rt.calm.peek(real, now))

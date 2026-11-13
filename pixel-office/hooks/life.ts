@@ -138,6 +138,8 @@ export const cleaning = (v: View): boolean => v.janitor
 export class Life {
   readonly acts = new Map<Who, Act>()
   private rand = rng(7)
+  /** Ticks the Manager has thought this turn (round 11: empty cups pile up on the desk); 0 between turns. */
+  thought = 0
   /** The thought bubble: 0 none, 1 a dot, 2 two dots, 3 the bubble. */
   think = 0
   private thinkClock = 0
@@ -255,6 +257,8 @@ export class Life {
     const reply = v.workers.typist?.note === 'reply'
     if (this.typingReply && !reply) this.replyEnded = v.now
     this.typingReply = reply
+    if (v.mood === 'think') this.thought++
+    else if (!workTime(v)) this.thought = 0
     const work = workTime(v)
     const free: Who[] = []
     for (const r of ROLES) {
@@ -294,8 +298,17 @@ export class Life {
       if (ok && sim.tick < act!.until) continue
       // Ticking the board: until every done line has its tick.
       if (r === 'manager' && act?.kind === 'tick' && (this.pending.length || sim.tick < this.tickShow)) continue
-      // Enough people setting off already: keep at it a moment longer (2 s at most, so nobody is stuck).
-      if (ok && !work && sim.here(r) && this.settingOff(sim, free) >= SETTING_OFF) {
+      // A party: nobody sets off for a break (they cheer where they are; breaks start after it). (Only off a desk an
+      // agent just took, to a spare place.)
+      if (v.party) {
+        this.endAct(r)
+        if (blocked) sim.goTo(r, spare(sim, r))
+        continue
+      }
+      // Enough people setting off already: keep at it a moment longer (2 s at most, so nobody is stuck). (Also with
+      // nothing left to keep at: own work that ended with the turn, or all at once after a party. Never at a desk an
+      // agent just took: off it at once.)
+      if (!blocked && !work && sim.here(r) && this.settingOff(sim, free) >= SETTING_OFF) {
         const since = this.held.get(r) ?? sim.tick
         this.held.set(r, since)
         if (sim.tick - since < HOLD_MAX) continue

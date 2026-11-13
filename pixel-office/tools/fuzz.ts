@@ -53,6 +53,8 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   /** Per role: had a job since its last report started. */
   const workedSince = new Map<string, boolean>()
   const lastAct = new Map<string, string | undefined>()
+  /** Where each one was headed last tick. */
+  const lastDest = new Map<string, string | undefined>()
   let cleanEnded = -1
   let prevJanitor = false
   /** The thinking stretch (sim ticks): since when, and the tick its huddle started. */
@@ -108,7 +110,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
     if (v.mood === 'think' && (/^pace/.test(md) || md === 'coffee' || md === 'board')) saw('manager thinks at ' + md)
     if (life.calling(sim.tick)) saw('manager calls out')
     if (life.lap) saw('laptop ' + life.lap)
-    if (v.mood === 'done' && /Done in ([2-9]|\d\d+)m/.test(v.line)) saw('party')
+    if (v.party) saw('party')
     if (sim.actors.get('courier')?.dest === 'door') saw('parcel at the door')
 
     // Night (round 9): the Manager leaves only after the staff; soon nobody without a job is inside; when the night
@@ -192,6 +194,14 @@ for (let seed = 1; seed <= SEEDS; seed++) {
         const a = sim.actors.get(r)
         if (a && !a.leaving && BREAK_SPOTS.has(a.dest)) at('break in work time: ' + r + ' to ' + a.dest)
       }
+    // The party: only while the mood is done; nobody sets off to a break spot during it.
+    if (v.party && v.mood !== 'done') at('party: while ' + v.mood)
+    for (const id of ['manager', ...ROLES]) {
+      const a = sim.actors.get(id as 'manager')
+      const dest = a && !a.leaving ? a.dest : undefined
+      if (v.party && dest && BREAK_SPOTS.has(dest) && lastDest.get(id) !== dest) at('party: ' + id + ' set off to ' + dest)
+      lastDest.set(id, dest)
+    }
     // Each finished job reported once: a new report only after a job (or the reply) since the last one.
     for (const r of ROLES) {
       const w = v.workers[r]

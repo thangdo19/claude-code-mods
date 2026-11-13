@@ -16,10 +16,12 @@ export const DESK_OWNER: readonly (Role | null)[] = [null, 'planner', null, null
 /** The order agents take desks: the free one first, then the Planner's. */
 export const AGENT_DESKS: readonly number[] = [3, 1]
 
-/** A pinned clock: the hour (0–23) and the date [year, month 1–12, day]; unset parts come from the real time. */
-let pinned: { hour?: number; date?: readonly [number, number, number] } = {}
-export const setClock = (c: { hour?: number; date?: readonly [number, number, number] }): void => {
+/** A pinned clock: the hour (0–23), the minute and the date [year, month 1–12, day]; unset parts come from the real time. */
+let pinned: { hour?: number; minute?: number; date?: readonly [number, number, number] } = {}
+export const setClock = (c: { hour?: number; minute?: number; date?: readonly [number, number, number] }): void => {
   pinned = c
+  decorMemo = null
+  rainMemo = null
 }
 
 /** The date [year, month 1–12, day] at `now` (ms). */
@@ -29,6 +31,34 @@ export const dateAt = (now: number): readonly [number, number, number] => {
 }
 /** The hour at `now` (ms). */
 export const hourAt = (now: number): number => pinned.hour ?? new Date(now).getHours()
+/**
+ * The minute at `now` (round 11: the wall clock tells the time). A clock pinned to an hour alone is on the hour, so
+ * pinned frames never change with the real minute.
+ */
+export const minuteAt = (now: number): number => pinned.minute ?? (pinned.hour !== undefined ? 0 : new Date(now).getMinutes())
+/** A day number well mixed (two xorshift-multiply rounds): days next to each other share nothing. */
+const mixed = (n: number): number => {
+  let h = (n ^ 0x2545f491) >>> 0
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d)
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b)
+  return (h ^ (h >>> 16)) >>> 0
+}
+const wet = (day: number): boolean => mixed(day) % 5 === 0
+/**
+ * Round 11: about one day in five is rainy, by the date alone (the same all day, the same for everyone), never more
+ * than 3 days in a row: a fourth wet day is dry.
+ */
+export const rainyOn = (y: number, m: number, d: number): boolean => {
+  const t = dayNo(y, m, d)
+  return wet(t) && !(wet(t - 1) && wet(t - 2) && wet(t - 3))
+}
+/** Is the day at `now` rainy? (Asked every frame, worked out once a minute, as `decorAt`.) */
+export function rainyDay(now: number): boolean {
+  const minute = Math.floor(now / 60_000)
+  if (rainMemo?.minute !== minute) rainMemo = { minute, rainy: rainyOn(...dateAt(now)) }
+  return rainMemo.rainy
+}
+let rainMemo: { minute: number; rainy: boolean } | null = null
 /** The window's sky by the clock (night after 10 idle minutes stays as it was). */
 export function skyAt(now: number): 'morning' | 'day' | 'sunset' | 'night' {
   const h = hourAt(now)
@@ -109,7 +139,9 @@ export const thanksgiving = (y: number): number => nthWeekday(y, 11, 4, 4)
  * Year `y`'s holidays as [holiday, first day, last day], the most important first: on its days it wins the wall, the
  * desk and the window. Monday holidays show the long weekend (Saturday to Monday).
  */
-export function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, number][] {
+export function holidaysOf(y: number): readonly (readonly [Exclude<Holiday, 'christmas'>, number, number])[] {
+  // (Asked every frame; a year's holidays never change.)
+  if (yearMemo?.y === y) return yearMemo.all
   const out: [Exclude<Holiday, 'christmas'>, number, number][] = []
   const on = (h: Exclude<Holiday, 'christmas'>, m: number, d: number, before = 0, after = 0) => out.push([h, dayNo(y, m, d) - before, dayNo(y, m, d) + after])
   on('newyear', 12, 31, 0, 1)
@@ -130,8 +162,10 @@ export function holidaysOf(y: number): [Exclude<Holiday, 'christmas'>, number, n
   const [em, ed] = easter(y)
   on('easter', em, ed, 6)
   on('halloween', 10, 31, 11)
+  yearMemo = { y, all: out }
   return out
 }
+let yearMemo: { y: number; all: readonly (readonly [Exclude<Holiday, 'christmas'>, number, number])[] } | null = null
 const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'desk' | 'window' | 'floor'>> = {
   newyear: { wall: 'tinsel', desk: 'confetti', window: 'fireworks', floor: null },
   mlk: { wall: null, desk: 'flag', window: null, floor: null },
@@ -156,8 +190,16 @@ const DAY_DECOR: Record<Exclude<Holiday, 'christmas'>, Pick<Decor, 'wall' | 'des
  * stockings, a poinsettia; in December snow in the window and a gift more every 6 days; Dec 24–25 every gift and Santa
  * hats; after that the tree stays up to New Year. A holiday on its days wins the wall, the desk and the window; the
  * tree stays. On Feb 14 itself Valentine's wins over Tết (round 9).
+ * Asked every frame, worked out once a minute (the date and the hour change no sooner; `setClock` starts it over):
+ * the answer is shared, so only read it.
  */
-export function decorAt(now: number): Decor {
+export function decorAt(now: number): Readonly<Decor> {
+  const minute = Math.floor(now / 60_000)
+  if (decorMemo?.minute !== minute) decorMemo = { minute, decor: decorOn(now) }
+  return decorMemo.decor
+}
+let decorMemo: { minute: number; decor: Decor } | null = null
+function decorOn(now: number): Decor {
   const [y, m, d] = dateAt(now)
   const t = dayNo(y, m, d)
   const out: Decor = { ...NO_DECOR }

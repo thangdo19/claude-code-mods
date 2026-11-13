@@ -11,6 +11,7 @@ import { renderBig } from '../hooks/scene'
 import { CellCoder } from '../hooks/cells'
 import { Calm } from '../hooks/calm'
 import { Camera } from '../hooks/camera'
+import type { Scene } from '../hooks/gfx/fb'
 import { addSec } from '../hooks/office'
 
 const TICKS = Number(process.argv[2] ?? 4000)
@@ -42,8 +43,11 @@ function run(name: string, o: Office): void {
   const camCoder = new CellCoder()
   const t = { sim: 0, list: 0, draw: 0, encode: 0, camera: 0 }
   let last = ''
+  // (One picture drawn over each frame, the camera's window read straight from it: as the pane does.)
+  let scene: Scene | undefined
   let sent = 0
   let wasMoving = false
+  let quarters = 0
   let len = 0
   const warm = 400
   const gc = new GCProfiler()
@@ -62,7 +66,11 @@ function run(name: string, o: Office): void {
     b = ns()
     if (on) t.list += b - a
     a = b
-    const full = renderBig(v, sim, i >> 1, i)
+    // (As the pane: a quiet office with nobody walking is on eco frames, see `onTick`.)
+    const moving = sim.walking()
+    const eco = !moving && sim.quiet(v)
+    quarters += eco ? 1 : 2
+    const full = (scene = renderBig(v, sim, quarters >> 2, i, undefined, scene))
     b = ns()
     if (on) t.draw += b - a
     a = b
@@ -71,15 +79,14 @@ function run(name: string, o: Office): void {
     if (on) t.encode += b - a
     a = b
     cam.step(v, 64, 32, sim)
-    camCoder.encode(cam.view(full, 64, 32))
+    camCoder.window(full, cam.left, cam.top, 64, 16)
     b = ns()
     if (on) t.camera += b - a
-    // The pane's rule (fullscreen, the full office): every other tick unless someone walks; at night every 8th; the
-    // frame where they stop always. Sent only when it changed.
-    const moving = sim.walking()
+    // The pane's rule (fullscreen, the full office): every other tick unless someone walks; at night every 8th; a
+    // quiet office (Eco) every 4th; the frame where they stop always. Sent only when it changed.
     const stopped = wasMoving && !moving
     wasMoving = moving
-    const draw = stopped || !((!moving && i % 2) || (v.night && !moving && i % 8))
+    const draw = stopped || !((!moving && i % 2) || (sim.dark(v) && !moving && i % 8) || (eco && i % 4))
     if (on && draw && c.cells !== last) sent++
     if (draw) last = c.cells
     len = c.cells.length

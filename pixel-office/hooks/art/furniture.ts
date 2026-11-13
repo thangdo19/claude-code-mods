@@ -134,18 +134,6 @@ export function door(fb: FB, x: number, y: number, w: number, h: number, open: b
     fb.s(x + w - 2, y + Math.floor(h / 2) + 1, P.knob)
   }
 }
-/** The wall clock: a dark rim round a white face, the hour hand up, the red second hand going round. */
-export function clock(fb: FB, x: number, y: number, f: number): void {
-  fb.r(x + 1, y, 3, 1, '#4d5563')
-  fb.r(x, y + 1, 5, 3, '#4d5563')
-  fb.r(x + 1, y + 4, 3, 1, '#4d5563')
-  fb.r(x + 1, y + 1, 3, 3, '#f6f7f9')
-  const hands = [[2, 1], [3, 1], [3, 2], [3, 3], [2, 3], [1, 3], [1, 2], [1, 1]] as const
-  const [a, b] = hands[(f >> 1) % 8] ?? hands[0]
-  fb.s(x + 2, y + 1, OUT)
-  fb.s(x + 2, y + 2, OUT)
-  fb.s(x + a, y + b, P.red)
-}
 /** The Manager's leather chair, 11 × 14: a rounded top, a buttoned back. */
 export function bossChair(fb: FB, x: number, y: number): void {
   fb.r(x + 1, y, 9, 1, '#8a4a35')
