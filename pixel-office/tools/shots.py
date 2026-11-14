@@ -16,7 +16,10 @@ args = ['claude', '--model', 'haiku', '--allowedTools', 'Bash', 'Read']
 import json as _j
 _set = {}
 if mode == 'classic': _set['tui'] = 'default'
-if os.environ.get('OLD_DIR'): _set['env'] = {'CLAUDE_CODE_PLUGIN_DIRS': os.environ['OLD_DIR']}
+# The session loads the installed pixel-office (read from the repo); OLD_DIR swaps it for that copy, so one office loads.
+if os.environ.get('OLD_DIR'):
+    _set['env'] = {'CLAUDE_CODE_PLUGIN_DIRS': os.environ['OLD_DIR']}
+    _set['enabledPlugins'] = {'pixel-office@claude-code-mods': False}
 if _set: args += ['--settings', _j.dumps(_set)]
 screen = pyte.Screen(cols, rows)
 stream = pyte.ByteStream(screen)
