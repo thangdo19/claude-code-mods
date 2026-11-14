@@ -42,11 +42,16 @@ While you view an agent's transcript (← for agents), the line becomes one row 
 | Part | Meaning |
 |---|---|
 | `Session` / `Week` / `Spend` | Your 5-hour limit, your weekly limit, and a company gateway's spend limit if you have one. |
-| The bar | Orange: how much of the limit is used (all sessions, claude.ai too). The whole bar turns red at 90% and up. |
+| The bar | Orange: how much of the limit is used (all sessions, claude.ai too). The whole bar turns amber at 75% and red at 90%. |
+| `│` in the bar | The pace mark: how far through its window the limit is. Fill past the mark means you're using it faster than it refills. |
 | `95%` | How much of that limit you've used. `over by 4%` past 100%. |
 | `▲ +0.2% last` | What your last turn used, agents included. |
 | `+1.2% now` | What the running turn has used so far, agents included (only while Claude works). |
+| `full Nov 17 at 6am` | At this pace the limit runs out then, before it resets. Shown only when that happens. |
 | `37m → 6:30pm` | Time left until the limit resets, then the clock time. |
+| `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it. |
+
+In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `last`, then `full`) so the label, bar and figure always fit.
 
 ## Install
 
@@ -65,6 +70,7 @@ npx -p typescript tsc -p .   # type check
 ```
 
 - `hooks/weather.ts`: formatting helpers (no Claude Code calls, easy to test).
+- `hooks/rows.ts`: the limit rows (Session, Week, Fable, Spend) as pieces of text, also pure.
 - `hooks/register.tsx`: the hooks and the band above the prompt.
 - `types/index.d.ts`: the shape of the saved state.
 
@@ -73,6 +79,7 @@ npx -p typescript tsc -p .   # type check
 - The limit bars need a Claude subscription login. With an API key they stay hidden.
 - Limits come in whole points, so a small turn often reads `<1%`.
 - It only counts Claude Code on this computer. Using claude.ai or another computer at the same time makes the per-turn figures read a little high, but never more than the whole account moved (plus 1 point, since readings are whole points).
+- Claude Code doesn't pass a mod the Fable limit, so the mod asks your account for it itself (the same usage answer `/usage` reads), with your login, at session start and after your turns, at most once a minute. If it can't (a company gateway, no login, extra traffic switched off), the row shows the mod's own count instead: what Fable replies cost this week on this computer, in Week points, with the other models as a faint shadow up to Week's figure. That count starts the day the mod is installed (`since Sat` until the week resets), leaves out claude.ai and other computers, and never reads higher than Week.
 
 ## Details
 
@@ -87,4 +94,4 @@ npx -p typescript tsc -p .   # type check
   - `↻ switched from Opus 5.5`: the model changed (`/model`, or an automatic fallback). Stays until one whole turn has run on the new model. Helper agents' models never count.
 - **New session:** the bars show the last readings saved by an earlier session until Claude replies.
 - **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go.
-- **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings.
+- **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings and Fable counts.
