@@ -1,5 +1,5 @@
-/** One usage-limit window as the last API response reported it. */
-export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
+/** One usage-limit window as last read; `isReset` once its reset time has passed with no reading since. */
+export type Limit = { kind: string; percentUsed: number; resetsAt?: string; isReset?: boolean }
 
 /** Where an agent's loop stands, as the band marks it. */
 export type AgentStatus = 'running' | 'done' | 'failed' | 'killed' | 'idle'
@@ -54,10 +54,19 @@ export type Weather = {
   limits: Limit[]
   /** When `limits` were saved by an earlier session; null once live. */
   limitsAsOf: number | null
+  /** When the reading in `limits` was taken, by this session, another one or the account; 0 unknown. */
+  limitsAt: number
+  /** The engine's last reading as text, to tell a new reading from a repeat; '' before the first. */
+  seen: string
   /** Each limit's % when the running turn began; null between turns. */
   turnStartLimits: Record<string, number> | null
   /** Each limit's % change over the last finished turn; negative when its window reset. */
   lastLimitDelta: Record<string, number>
+  /**
+   * Where the last finished turn began, kept until the next one starts: what
+   * is spent meanwhile (a background agent of that turn) still counts as its.
+   */
+  lastStart: TurnStart | null
   /** This session's id in the store's shared spend list; '' before session.start. */
   instanceId: string
   /** The session's own $ total at the last reading; null before the first. */
@@ -104,11 +113,14 @@ export type Weather = {
   fableSince: number | null
   /** Fable's allowance as a % of the week (50), from the account's usage answer; null when unknown. */
   fableAllowance: number | null
-  /** When the account's usage answer was last asked for (it is asked at most once a minute); 0 never. */
+  /** When the account's usage answer held was asked for, by this session or another (at most once a minute); 0 never. */
   serverAt: number
-  /** A turn ended since that answer was asked for: the minute timer asks again. */
+  /** A turn or an agent's run ended since this session asked: the minute timer asks again. */
   serverDue: boolean
 }
+
+/** Where a turn began: this session's spend, each limit's %, its Fable $. */
+export type TurnStart = { spent: number | null; limits: Record<string, number> | null; fable: number | null }
 
 /** $ by model family in one window of the parent limit (Week, or Spend). */
 export type ModelLedger = { usd: Record<string, number>; resetsAt?: string }

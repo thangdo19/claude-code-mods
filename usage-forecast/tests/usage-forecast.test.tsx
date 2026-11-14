@@ -12,7 +12,7 @@ import {
   fullAt,
   paceAt,
   runs,
-  serverFable,
+  serverLimits,
   tidy,
   toAllowance,
   fitItems,
@@ -32,6 +32,7 @@ import {
   usageCells,
   weatherFor,
 } from '../hooks/weather'
+import { limitRows } from '../hooks/rows'
 
 const NOW = Date.parse('2026-10-10T10:00:00Z')
 const props = (isWorking: boolean) => ({
@@ -110,7 +111,7 @@ describe('helpers', () => {
   test('saved limits past their reset come back fresh', () => {
     const [kept, fresh] = reviveLimits([limit('five_hour', 40, '2026-10-10T12:00:00Z'), limit('seven_day', 70, '2026-10-01T00:00:00Z')], NOW)
     expect(kept).toEqual(limit('five_hour', 40, '2026-10-10T12:00:00Z'))
-    expect(fresh).toEqual({ kind: 'seven_day', percentUsed: 0, resetsAt: undefined })
+    expect(fresh).toEqual({ kind: 'seven_day', percentUsed: 0, resetsAt: undefined, isReset: true })
   })
 
   test('limit deltas', () => {
@@ -179,7 +180,15 @@ describe('helpers', () => {
     // A reset time a few minutes off is the same window.
     expect(learnRate(learned, limit('five_hour', 14, '2026-10-10T15:05:00Z'), { a: 2 }).pct).toBe(10)
     const next = learnRate(learned, limit('five_hour', 1, '2026-10-10T20:00:00Z'), { a: 2, b: 1 })
-    expect(next).toEqual({ rate: 2, pct: 1, resetsAt: '2026-10-10T20:00:00Z', snap: { a: 2, b: 1 } })
+    // The next window keeps the rate, and how many points it was measured over.
+    const later = '2026-10-10T20:00:00Z'
+    expect(next).toEqual({ rate: 2, pct: 1, resetsAt: later, snap: { a: 2, b: 1 }, span: 4 })
+    // Its first 2 points for $1.25 could be 1 to 3: the longer-measured rate fits, and stands.
+    expect(learnRate(next, limit('five_hour', 3, later), { a: 3, b: 1.25 })).toBe(next)
+    // 2 points for $4 is 0.75 a dollar at most: the old rate can't be right any more.
+    expect(learnRate(next, limit('five_hour', 3, later), { a: 6, b: 1 })).toMatchObject({ rate: 0.5, span: 2 })
+    // Measured over as many points, the new window takes over.
+    expect(learnRate(next, limit('five_hour', 5, later), { a: 4.5, b: 1 })).toMatchObject({ rate: 1.6, span: 4 })
   })
 
   test("a turn's change: own share with a rate, the account's without, a reset either way", () => {
@@ -278,7 +287,7 @@ describe('band', () => {
     expect(await idle.find({ type: 'Text', text: /^ 5\.5%$/ })).toBeDefined()
     expect(await idle.find({ type: 'Text', text: /▲ \+1\.5% last/ })).toBeDefined()
     // Week did not move: the slot reads <1% instead of going blank.
-    expect(await idle.find({ type: 'Text', text: /▲ <1% last$/ })).toBeDefined()
+    expect(await idle.find({ type: 'Text', text: /▲ +<1% last$/ })).toBeDefined()
     expect(await idle.find({ type: 'Text', text: /% now/ })).toBeUndefined()
     // 10:00 to 21:50 UTC: the countdown, then the local clock time.
     expect(await idle.find({ type: 'Text', text: /^ · 11h 50m → .+$/ })).toBeDefined()
@@ -688,10 +697,82 @@ describe('edge cases', () => {
     await clock.advance(10_000)
     saved.lastLimits = { at: NOW + 5_000, limits: [limit('five_hour', 31)] }
     await $.turn.start({ text: 'hi', turnId: 't1' })
+    // The bar reads that reading too: against the older 30 the turn looked like a reset.
+    const waiting = await $.ui.mount({ ...band, props: props(true) })
+    expect(await waiting.find({ type: 'Text', text: /^ 31%$/ })).toBeDefined()
+    expect(await waiting.find({ type: 'Text', text: /reset/ })).toBeUndefined()
     s.usage = { ...s.usage, rateLimits: [limit('five_hour', 33)] }
     await step($, 't1')
     const working = await $.ui.mount({ ...band, props: props(true) })
     expect(await working.find({ type: 'Text', text: /^ \+2% now$/ })).toBeDefined()
+  })
+
+  test("an idle session's bars follow another session's newer reading, never a lower one", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const saved = sharedStore(on)
+    const s = harness(on, { tokens: 40000, limits: [limit('five_hour', 30), limit('seven_day', 8)] })
+    await start($)
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await step($, 't1')
+    await complete($, 't1')
+    expect(saved.lastLimits).toEqual({ at: NOW, limits: [limit('five_hour', 30), limit('seven_day', 8)] })
+
+    // Another session works on: within a minute this one shows what it read.
+    saved.lastLimits = { at: NOW + 30_000, limits: [limit('five_hour', 55), limit('seven_day', 9)] }
+    await clock.advance(60_000)
+    let ui = await $.ui.mount({ ...band, props: props(false) })
+    expect(await ui.find({ type: 'Text', text: /^ 55%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ 9%$/ })).toBeDefined()
+
+    // A window only fills: a reading that says less of it is not taken.
+    saved.lastLimits = { at: NOW + 90_000, limits: [limit('five_hour', 40), limit('seven_day', 9)] }
+    await clock.advance(60_000)
+    ui = await $.ui.mount({ ...band, props: props(false) })
+    expect(await ui.find({ type: 'Text', text: /^ 55%$/ })).toBeDefined()
+
+    // The engine still repeats this session's old 30: the next turn counts from 55 all the same.
+    await $.turn.start({ text: 'more', turnId: 't2' })
+    s.usage = { ...s.usage, rateLimits: [limit('five_hour', 56), limit('seven_day', 9)] }
+    await step($, 't2')
+    ui = await $.ui.mount({ ...band, props: props(true) })
+    expect(await ui.find({ type: 'Text', text: /^ \+1% now$/ })).toBeDefined()
+  })
+
+  test('a turn cancelled before any reply shares no reading and teaches no rate', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const saved = sharedStore(on, {
+      'rates.v2': { five_hour: { rate: 2, pct: 10, resetsAt: RESET, snap: {} } },
+      'spend.other': { usd: 9, at: NOW },
+    })
+    harness(on, { tokens: 40000, limits: [limit('five_hour', 32)] })
+    await start($)
+    // Idle while another session worked: its reading is the newest there is.
+    await clock.advance(10 * 60_000)
+    const theirs = { at: NOW + 9 * 60_000, limits: [limit('five_hour', 50)] }
+    saved.lastLimits = theirs
+    const rates = JSON.stringify(saved['rates.v2'])
+
+    await $.turn.start({ text: 'oops', turnId: 't1' })
+    await complete($, 't1', { reason: 'aborted', isAborted: true })
+    // This session's old 32 is not passed off as new, nor measured against the other's spend.
+    expect(saved.lastLimits).toEqual(theirs)
+    expect(JSON.stringify(saved['rates.v2'])).toBe(rates)
+    const ui = await $.ui.mount({ ...band, props: props(false) })
+    expect(await ui.find({ type: 'Text', text: /^ 50%$/ })).toBeDefined()
+  })
+
+  test('a session that spent nothing leaves no entry, and empty ones go', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const saved = sharedStore(on, { 'spend.empty': { usd: 0, at: NOW }, 'spend.other': { usd: 3, at: NOW } })
+    const s = harness(on, { tokens: 40000, limits: [limit('five_hour', 10)] })
+    s.usage = { ...s.usage, cost: { usd: 0 } } as typeof s.usage
+    await start($)
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    s.usage = { ...s.usage, rateLimits: [limit('five_hour', 11)] }
+    await step($, 't1')
+    await complete($, 't1')
+    // A missing entry counts as 0: the fewer there are, the less every session reads.
+    expect(Object.keys(saved).filter(k => k.startsWith('spend.'))).toEqual(['spend.other'])
   })
 
   test('saved limits draw the same orange bar, with no age note', async ($, on) => {
@@ -905,12 +986,13 @@ describe('edge cases', () => {
       expect((await ui.find({ type: 'Text', text: /^│$/ }))?.props.backgroundColor).toBe('claude')
       expect((await ui.find({ type: 'Text', text: /^██▌ {26}$/ }))?.props.color).toBe('claude')
 
-      // Your turn ends; the agent keeps spending in the background.
+      // Your turn ends; the agent keeps spending in the background: the turn's figure grows with it.
       await complete($, 't1')
+      expect(await (await mount($, false)).find({ type: 'Text', text: /^ ▲ \+1\.5% last$/ })).toBeDefined()
       read(s, 1)
       await agentStep($, 'a1')
       let idle = await mount($, false)
-      expect(await idle.find({ type: 'Text', text: /^ ▲ \+1\.5% last$/ })).toBeDefined()
+      expect(await idle.find({ type: 'Text', text: /^ ▲ \+2% last$/ })).toBeDefined()
       expect(await idle.find({ type: 'Text', text: /background|you/ })).toBeUndefined()
 
       // Finished: marked done, and gone once your next turn starts.
@@ -1013,12 +1095,12 @@ describe('edge cases', () => {
       return { s, saved, clock }
     }
     // The account's usage answer, as /usage gets it: Fable at `pct` of its allowance (none when null).
-    const answer = (pct: number | null) =>
+    const answer = (pct: number | null, session = 30, all = 42) =>
       JSON.stringify({
-        five_hour: { utilization: 30 },
+        five_hour: { utilization: session },
         limits: [
-          { kind: 'session', percent: 30, resets_at: '2026-10-10T12:30:00+00:00', scope: null },
-          { kind: 'weekly_all', percent: 42, resets_at: '2026-10-15T10:00:00+00:00', scope: null },
+          { kind: 'session', percent: session, resets_at: '2026-10-10T12:30:00+00:00', scope: null },
+          { kind: 'weekly_all', percent: all, resets_at: '2026-10-15T10:00:00+00:00', scope: null },
           ...(pct === null
             ? []
             : [{ kind: 'weekly_scoped', percent: pct, resets_at: '2026-10-15T09:59:59.580142+00:00', scope: { model: { id: null, display_name: 'Fable' } } }]),
@@ -1062,7 +1144,7 @@ describe('edge cases', () => {
       const rows = await rowsOf(ui)
       expect(rows.map(r => r.split(' ')[0])).toEqual(['Session', 'Week', '└'])
       // $25 at 0.12 points per $: 3 of the Week's 45.
-      expect(rows[2]).toMatch(/^└ Fable  .{30} 3% \+3% now · since Sat$/)
+      expect(rows[2]).toMatch(/^└ Fable  .{30} +3% +\+3% now +· since Sat$/)
       expect((await ui.find({ type: 'Text', text: /^ 3%$/ }))?.props.color).toBe('permission')
       expect((await ui.find({ type: 'Text', text: /^└ Fable  $/ }))?.props.color).toBe('permission')
       // Inside Week: Fable's 0.9 cell over the other models' shadow.
@@ -1071,7 +1153,7 @@ describe('edge cases', () => {
       expect((await ui.find({ type: 'Text', text: /^█{12}▌ {16}$/ }))?.props.backgroundColor).toBe('#4a2e25')
 
       await complete($, 't1')
-      expect(await fableRow(await mount($))).toMatch(/ 3% ▲ \+3% last · since Sat$/)
+      expect(await fableRow(await mount($))).toMatch(/ 3% +▲ +\+3% last · since Sat$/)
 
       // On Opus: Week moves, the Fable row holds still and says nothing of the turn.
       await $.turn.start({ text: 'more', turnId: 't2' })
@@ -1079,11 +1161,11 @@ describe('edge cases', () => {
       await stepOn($, 't2', 'claude-opus-5-5')
       ui = await mount($, true)
       // The last turn's figure stays while the next runs, as on the other rows.
-      expect(await fableRow(ui)).toMatch(/ 3% ▲ \+3% last · since Sat$/)
+      expect(await fableRow(ui)).toMatch(/ 3% +▲ +\+3% last · since Sat$/)
       expect(await ui.find({ type: 'Text', text: /^ \+1\.8% now$/ })).toBeDefined()
       await complete($, 't2')
       // No Fable this turn: no "last". ($40 moved the Week 5 points: the rate is now 0.125.)
-      expect(await fableRow(await mount($))).toMatch(/ 3\.1% · since Sat$/)
+      expect(await fableRow(await mount($))).toMatch(/ 3\.1% +· since Sat$/)
     })
 
     test("a Haiku agent's replies move Week's change, not Fable's", async ($, on) => {
@@ -1097,8 +1179,8 @@ describe('edge cases', () => {
       await stepOn($, 'xa1', 'claude-haiku-5-5', { agentId: 'a1' })
       const ui = await mount($, true)
       const rows = await rowsOf(ui)
-      expect(rows[1]).toMatch(/ 46% \+4\.2% now /)
-      expect(rows[2]).toMatch(/ 3% \+3% now /)
+      expect(rows[1]).toMatch(/ 46% +\+4\.2% now /)
+      expect(rows[2]).toMatch(/ 3% +\+3% now /)
     })
 
     test('a week with no Fable reads a dim 0%, and says so', async ($, on) => {
@@ -1109,7 +1191,7 @@ describe('edge cases', () => {
       await stepOn($, 't1', 'claude-opus-5-5')
       await complete($, 't1')
       const ui = await mount($)
-      expect(await fableRow(ui)).toMatch(/^└ Fable  █{12}▉ {18}0% · not used this week$/)
+      expect(await fableRow(ui)).toMatch(/^└ Fable  █{12}▉ {19}0% +· not used this week$/)
       expect((await ui.find({ type: 'Text', text: /^ 0%$/ }))?.props.dimColor).toBe(true)
       expect((await ui.find({ type: 'Text', text: /^└ Fable  $/ }))?.props.dimColor).toBe(true)
     })
@@ -1125,10 +1207,10 @@ describe('edge cases', () => {
       reading(s, 25, [week(45, soon)])
       await stepOn($, 't1', FABLE_ID)
       await complete($, 't1')
-      expect(await fableRow(await mount($))).toMatch(/ 3% ▲ \+3% last · since Sat$/)
+      expect(await fableRow(await mount($))).toMatch(/ 3% +▲ +\+3% last · since Sat$/)
 
       await clock.advance(121 * 60_000)
-      expect(await fableRow(await mount($))).toMatch(/ 0% · not used this week$/)
+      expect(await fableRow(await mount($))).toMatch(/ 0% +· not used this week$/)
 
       // The new week: counted from its start, so no "since".
       await $.turn.start({ text: 'again', turnId: 't2' })
@@ -1136,7 +1218,7 @@ describe('edge cases', () => {
       await stepOn($, 't2', FABLE_ID)
       await complete($, 't2')
       const row = await fableRow(await mount($))
-      expect(row).toMatch(/ 3% ▲ \+3% last$/)
+      expect(row).toMatch(/ 3% +▲ +\+3% last$/)
     })
 
     test("every session's count adds up, shown at once; old and stale ones are left out", async ($, on) => {
@@ -1154,7 +1236,7 @@ describe('edge cases', () => {
       await $.turn.start({ text: 'hi', turnId: 't1' })
       reading(s, 25, [limit('five_hour', 31, FIVE), week(45)])
       await stepOn($, 't1', FABLE_ID)
-      expect(await fableRow(await mount($, true))).toMatch(/ 15% \+3% now/)
+      expect(await fableRow(await mount($, true))).toMatch(/ 15% +\+3% now/)
       const own = Object.keys(saved).find(k => k.startsWith('models.') && !['models.other', 'models.lastweek', 'models.since'].includes(k))
       // Saved under its own key, for the other sessions to add up.
       expect(saved[own!]).toEqual({ usd: { Fable: 25 }, resetsAt: WEEK, at: NOW })
@@ -1179,8 +1261,8 @@ describe('edge cases', () => {
       await start($)
       const rows = await rowsOf(await mount($))
       expect(rows).toHaveLength(2)
-      expect(rows[0]).toMatch(/^Spend {4}[^│]{30} 46% · /)
-      expect(rows[1]).toMatch(/^└ Fable  .{30} 39% · since Sat$/)
+      expect(rows[0]).toMatch(/^Spend {4}[^│]{30} 46% +· /)
+      expect(rows[1]).toMatch(/^└ Fable  .{30} 39% +· since Sat$/)
     })
 
     test('limits that leave, or a logout, take the row and every saved count with them', async ($, on) => {
@@ -1216,7 +1298,7 @@ describe('edge cases', () => {
       const rows = (await rowsOf(ui)).filter(r => r.startsWith('└ Fable'))
       expect(rows).toHaveLength(1)
       // 2 of 7 days left: the pace mark past the fill.
-      expect(rows[0]).toMatch(/^└ Fable  █{16}▌ {4}│ {8} 55% · 2d → Oct 12 at /)
+      expect(rows[0]).toMatch(/^└ Fable  █{16}▌ {4}│ {8} 55% +· 2d → Oct 12 at /)
       expect((await ui.find({ type: 'Text', text: /^ 55%$/ }))?.props.color).toBe('permission')
     })
 
@@ -1225,7 +1307,7 @@ describe('edge cases', () => {
       const server = serve(on, answer(17))
       await start($)
       // As /usage and claude.ai show it: 17% of Fable's allowance, its own reset and pace mark.
-      expect(await fableRow(await mount($))).toMatch(/^└ Fable  █{5}  {2}│ {21} 17% · 4d 23h → Oct 15 at \S+$/)
+      expect(await fableRow(await mount($))).toMatch(/^└ Fable  █{5}  {2}│ {21} 17% +· 5d → Oct 15 at \S+$/)
       expect(server.urls).toEqual(['https://api.anthropic.com/api/oauth/usage?skip_spend=1'])
       expect(server.auth).toEqual(['h'])
 
@@ -1233,9 +1315,9 @@ describe('edge cases', () => {
       await $.turn.start({ text: 'hi', turnId: 't1' })
       reading(s, 25, [limit('five_hour', 31, FIVE), week(45)])
       await stepOn($, 't1', FABLE_ID)
-      expect(await fableRow(await mount($, true))).toMatch(/ 17% \+6% now · /)
+      expect(await fableRow(await mount($, true))).toMatch(/ 17% +\+6% now +· /)
       await complete($, 't1')
-      expect(await fableRow(await mount($))).toMatch(/ 17% ▲ \+6% last · /)
+      expect(await fableRow(await mount($))).toMatch(/ 17% +▲ +\+6% last · /)
       // Asked once: the turn ended within the minute.
       expect(server.urls).toHaveLength(1)
       expect((await rowsOf(await mount($))).filter(r => r.startsWith('└ Fable'))).toHaveLength(1)
@@ -1244,13 +1326,66 @@ describe('edge cases', () => {
       await clock.advance(61_000)
       // The turn that ended inside the minute is caught up by the minute timer.
       expect(server.urls).toHaveLength(2)
-      expect(await fableRow(await mount($))).toMatch(/ 19% ▲ \+6% last · /)
+      expect(await fableRow(await mount($))).toMatch(/ 19% +▲ +\+6% last · /)
       await $.turn.start({ text: 'more', turnId: 't2' })
       reading(s, 30, [limit('five_hour', 32, FIVE), week(46)])
       await stepOn($, 't2', 'claude-opus-5-5')
       await complete($, 't2')
       expect(server.urls).toHaveLength(2)
-      expect(await fableRow(await mount($))).toMatch(/ 19% · 4d 23h → /)
+      expect(await fableRow(await mount($))).toMatch(/ 19% +· 4d 23h → /)
+    })
+
+    test("the account's answer brings Session and Week up to date after a turn, and after an agent's run", async ($, on) => {
+      const { s, clock } = setup(on)
+      const server = serve(on, answer(17))
+      await start($)
+      await clock.advance(61_000)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      // A reply's reading is taken before the reply is billed: after it, the bars still say 30 and 42.
+      reading(s, 25, [limit('five_hour', 30, FIVE), week(42)])
+      await stepOn($, 't1', 'claude-opus-5-5')
+      server.text = answer(17, 33, 45)
+      await complete($, 't1')
+      let rows = await rowsOf(await mount($))
+      // The account says where they stand now, and the turn's own figures follow.
+      expect(rows[0]).toMatch(/ 33% ▲ +\+3% last · /)
+      expect(rows[1]).toMatch(/ 45% ▲ +\+3% last · /)
+
+      // An agent's run ends later: asked again. A figure lower than the one held is not taken.
+      await $.agent.spawn({ prompt: 'go', description: 'scan', subagentType: 'Explore' } as never)
+      await clock.advance(61_000)
+      server.text = answer(17, 36, 44)
+      await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'xa1', reason: 'answer', agentId: 'a1' } as never)
+      rows = await rowsOf(await mount($))
+      expect(rows[0]).toMatch(/ 36% /)
+      expect(rows[1]).toMatch(/ 45% /)
+      expect(server.urls).toHaveLength(3)
+    })
+
+    test("another session's answer from within the minute is taken, with no request of its own", async ($, on) => {
+      const theirs = { at: NOW - 20_000, limits: [limit('five_hour', 34, FIVE), week(44), limit('weekly_fable', 21, WEEK)], allowance: 50 }
+      setup(on, { ...RATES, server: theirs })
+      const server = serve(on, answer(17))
+      await start($)
+      const rows = await rowsOf(await mount($))
+      expect(rows.map(r => /(\d+)% /.exec(r)?.[1])).toEqual(['34', '44', '21'])
+      expect(server.urls).toEqual([])
+    })
+
+    test("a background agent's Fable replies after the turn ended grow the Fable row's last", async ($, on) => {
+      const { s } = setup(on)
+      serve(on, answer(17))
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      reading(s, 25, [limit('five_hour', 31, FIVE), week(45)])
+      await stepOn($, 't1', FABLE_ID)
+      await $.agent.spawn({ prompt: 'go', description: 'scan', subagentType: 'Explore' } as never)
+      await complete($, 't1')
+      expect(await fableRow(await mount($))).toMatch(/ 17% ▲ +\+6% last · /)
+      // $25 more on Fable, after your turn: 6 Week points in all, 12% of Fable's allowance.
+      reading(s, 50, [limit('five_hour', 32, FIVE), week(48)])
+      await stepOn($, 'xa1', FABLE_ID, { agentId: 'a1' })
+      expect(await fableRow(await mount($))).toMatch(/ 17% ▲ +\+12% last · /)
     })
 
     test('with no login, or an answer with no Fable limit, the count stands in', async ($, on) => {
@@ -1258,7 +1393,7 @@ describe('edge cases', () => {
       const server = serve(on, answer(17))
       server.kind = null
       await start($)
-      expect(await fableRow(await mount($))).toMatch(/ 0% · not used this week$/)
+      expect(await fableRow(await mount($))).toMatch(/ 0% +· not used this week$/)
       expect(server.urls).toEqual([])
 
       const turn = async (turnId: string, usd: number) => {
@@ -1270,11 +1405,11 @@ describe('edge cases', () => {
       }
       server.kind = 'bearer'
       await turn('t1', 5)
-      expect(await fableRow(await mount($))).toMatch(/ 17% · /)
+      expect(await fableRow(await mount($))).toMatch(/ 17% +· /)
       // The answer stops listing Fable: back to the count.
       server.text = answer(null)
       await turn('t2', 10)
-      expect(await fableRow(await mount($))).toMatch(/ 0% · not used this week$/)
+      expect(await fableRow(await mount($))).toMatch(/ 0% +· not used this week$/)
     })
 
     test('a Fable limit with no known share of the week shows no turn figures', async ($, on) => {
@@ -1285,10 +1420,10 @@ describe('edge cases', () => {
       await $.turn.start({ text: 'hi', turnId: 't1' })
       reading(s, 25, [limit('five_hour', 31, FIVE), week(45)])
       await stepOn($, 't1', 'claude-opus-5-5')
-      expect(await fableRow(await mount($, true))).toMatch(/ 17% · /)
+      expect(await fableRow(await mount($, true))).toMatch(/ 17% +· /)
       await complete($, 't1')
       // Its % is read between turns: its change within one is always 0, and says nothing.
-      expect(await fableRow(await mount($))).toMatch(/ 17% · /)
+      expect(await fableRow(await mount($))).toMatch(/ 17% +· /)
     })
 
     test('Fable keeps its color until Fable alone passes 75', async ($, on) => {
@@ -1326,18 +1461,18 @@ describe('edge cases', () => {
         const rows = await rowsOf(await mount($, true, { bodyColumns: cols }))
         expect(rows).toHaveLength(3)
         for (const row of rows) expect(row.length).toBeLessThanOrEqual(cols)
-        for (const row of rows) expect(row).toMatch(/ \d+(\.\d)?% \+[\d.]+% now/)
+        for (const row of rows) expect(row).toMatch(/ \d+(\.\d)?% +\+[\d.]+% now/)
       }
       // 80 columns: Week's reset shortens to the time left.
       const [session, weekRow, fable] = await rowsOf(await mount($, true, { bodyColumns: 80 }))
-      expect(session).toMatch(/ 82% \+2% now ▲ \+50% last · full \S+ · 2h 30m → \S+$/)
-      expect(weekRow).toMatch(/ 46% \+0\.6% now ▲ \+3% last · full Oct \d+ at \S+ · 5d$/)
-      expect(fable).toMatch(/ 3\.6% \+0\.6% now ▲ \+3% last · since Sat$/)
+      expect(session).toMatch(/ 82% +\+2% now ▲ +\+50% last · full \S+ · 2h 30m → \S+$/)
+      expect(weekRow).toMatch(/ 46% +\+0\.6% now ▲ +\+3% last · full Oct \d+ at \S+ · 5d$/)
+      expect(fable).toMatch(/ 3\.6% +\+0\.6% now ▲ +\+3% last · since Sat$/)
       // 56: no reset, no last; "full" and "since" still fit.
       const narrow = await rowsOf(await mount($, true, { bodyColumns: 56 }))
-      expect(narrow[0]).toMatch(/ 82% \+2% now · full \S+$/)
-      expect(narrow[1]).toMatch(/ 46% \+0\.6% now · full Oct \d+ at \S+$/)
-      expect(narrow[2]).toMatch(/ 3\.6% \+0\.6% now · since Sat$/)
+      expect(narrow[0]).toMatch(/ 82% +\+2% now +· full \S+$/)
+      expect(narrow[1]).toMatch(/ 46% +\+0\.6% now +· full Oct \d+ at \S+$/)
+      expect(narrow[2]).toMatch(/ 3\.6% +\+0\.6% now +· since Sat$/)
     })
   })
 })
@@ -1417,25 +1552,30 @@ describe('Fable helpers', () => {
     expect(runs(half(0.9))).toEqual([{ text: '█████    ', fg: 'f', bg: T }, { text: '│', bg: T }])
   })
 
-  test("the account's usage answer: Fable's figure, reset and allowance", () => {
+  test("the account's usage answer: Session, Week and Fable, reset times to the minute, Fable's allowance", () => {
     const text = JSON.stringify({
       limits: [
         { kind: 'session', percent: 44, resets_at: '2026-11-14T08:59:59.579988+00:00', scope: null },
+        { kind: 'weekly_all', percent: 10, resets_at: '2026-11-19T20:59:59.580007+00:00', scope: null },
         { kind: 'weekly_scoped', percent: 17, resets_at: '2026-11-19T20:59:59.580142+00:00', scope: { model: { id: null, display_name: 'Fable' } } },
       ],
-      weekly_scoped_shares: [{ limit_index: 1, used_percent_of_weekly: 9, allowance_percent_of_weekly: 50 }],
+      weekly_scoped_shares: [{ limit_index: 2, used_percent_of_weekly: 9, allowance_percent_of_weekly: 50 }],
     })
-    expect(serverFable(text)).toEqual({
-      limit: { kind: 'weekly_fable', percentUsed: 17, resetsAt: '2026-11-19T20:59:59.580Z' },
+    expect(serverLimits(text)).toEqual({
+      limits: [
+        { kind: 'five_hour', percentUsed: 44, resetsAt: '2026-11-14T09:00:00.000Z' },
+        { kind: 'seven_day', percentUsed: 10, resetsAt: '2026-11-19T21:00:00.000Z' },
+        { kind: 'weekly_fable', percentUsed: 17, resetsAt: '2026-11-19T21:00:00.000Z' },
+      ],
       allowance: 50,
     })
-    // Seconds since 1970 read the same.
-    expect(serverFable(JSON.stringify({ limits: [{ kind: 'weekly_scoped', percent: 3, resets_at: 1795640399, scope: { model: { display_name: 'Fable' } } }] })))
-      .toEqual({ limit: { kind: 'weekly_fable', percentUsed: 3, resetsAt: '2026-11-25T20:59:59.000Z' } })
-    // No Fable listed: none. Another shape, or not JSON: unknown (keep counting).
-    expect(serverFable(JSON.stringify({ limits: [] }))).toEqual({})
-    expect(serverFable(JSON.stringify({ five_hour: {} }))).toBeUndefined()
-    expect(serverFable('<html>')).toBeUndefined()
+    // Seconds since 1970 read the same. A Session with no reset time names no window: left out.
+    const bare = { limits: [{ kind: 'session', percent: 5, resets_at: null }, { kind: 'weekly_scoped', percent: 3, resets_at: 1795640399, scope: { model: { display_name: 'Fable' } } }] }
+    expect(serverLimits(JSON.stringify(bare))).toEqual({ limits: [{ kind: 'weekly_fable', percentUsed: 3, resetsAt: '2026-11-25T21:00:00.000Z' }] })
+    // No Fable listed: none. Another shape, or not JSON: unknown (keep what we have).
+    expect(serverLimits(JSON.stringify({ limits: [] }))).toEqual({ limits: [] })
+    expect(serverLimits(JSON.stringify({ five_hour: {} }))).toBeUndefined()
+    expect(serverLimits('<html>')).toBeUndefined()
     // Week points in Fable's own %: 3 of a 50% allowance is 6; never over 100; a reset stays.
     expect([toAllowance(3, 50), toAllowance(0.1, 50), toAllowance(80, 50), toAllowance(-40, 50)]).toEqual([6, 0.2, 100, -40])
   })
@@ -1453,6 +1593,48 @@ describe('Fable helpers', () => {
     expect(fullAt(80, '2026-10-10T14:45:00Z', now, FIVE_H, 600_000)).toBeUndefined()
     expect(fullAt(100, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBeUndefined()
     expect(fullAt(0, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBeUndefined()
+  })
+
+  test('the figures line up in columns; "last" leaves every row together; only a passed reset says so', () => {
+    const WEEK = '2026-10-15T10:00:00Z'
+    const w = {
+      now: NOW,
+      limits: [limit('five_hour', 9, '2026-10-10T12:30:00Z'), limit('seven_day', 11, WEEK), limit('weekly_fable', 17, WEEK)],
+      turnStartLimits: { five_hour: 8, seven_day: 11 },
+      lastLimitDelta: { five_hour: 0.4, seven_day: 0 },
+      spent: 10,
+      turnStartSpent: 8.6,
+      rates: { five_hour: 0.7, seven_day: 0.12 },
+      modelSpent: { usd: { Opus: 5 }, resetsAt: WEEK },
+      modelTotals: { usd: {} },
+      turnStartFable: 0,
+      lastFableDelta: 0.3,
+      fableSince: null,
+      fableAllowance: 50,
+    }
+    const text = (cols: number, state: object = w) => limitRows(state as never, cols, true).map(row => row.map(p => p.text).join(''))
+    // After the label and a 30-cell bar: each %, each "now", each "last" under the one above.
+    const [session, weekRow, fable] = text(140).map(row => row.slice(39))
+    expect(session).toMatch(/^  9%   \+1% now ▲ \+0\.4% last · /)
+    expect(weekRow).toMatch(/^ 11% \+0\.2% now ▲   <1% last · /)
+    expect(fable).toMatch(/^ 17%           ▲ \+0\.6% last · /)
+
+    // Narrower: every row keeps "last", or none does.
+    const kept = new Set<number>()
+    for (let cols = 40; cols <= 110; cols++) {
+      const rows = text(cols)
+      const withLast = rows.filter(row => row.includes('last')).length
+      expect([0, rows.length]).toContain(withLast)
+      for (const row of rows) expect(row.length).toBeLessThanOrEqual(cols)
+      kept.add(withLast)
+    }
+    expect([...kept].sort()).toEqual([0, 3])
+
+    // A limit that names no reset time says nothing of one; a window whose reset passed does.
+    const spend = { ...w, limits: [{ kind: 'spend_limit', percentUsed: 40 }, { kind: 'five_hour', percentUsed: 0, isReset: true }] }
+    const [fresh, gateway] = text(140, spend)
+    expect(fresh).toContain(' · window reset')
+    expect(gateway).not.toContain('reset')
   })
 
   test('a row too wide drops its pieces in order', () => {

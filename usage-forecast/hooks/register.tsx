@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
-import type { Agent, Limit, Weather } from '../types'
-import { fableTurnUsd, limitRows, MODEL_COLOR, thisDeltaOf } from './rows'
+import type { Agent, Limit, TurnStart, Weather } from '../types'
+import { fableUsdSince, limitRows, MODEL_COLOR, thisDeltaOf } from './rows'
 import {
   addSpend,
   AGENT_ICONS,
@@ -10,6 +10,7 @@ import {
   bookModel,
   endStatus,
   FABLE,
+  FABLE_KIND,
   fableTurn,
   familyOf,
   fitItems,
@@ -20,14 +21,16 @@ import {
   HISTORY,
   isAlias,
   isFableKind,
+  isSameReading,
   learnRate,
+  mergeLimits,
   parentOf,
   percentOf,
   pushHistory,
   reviveLimits,
   sameModel,
   sameWindow,
-  serverFable,
+  serverLimits,
   shareOf,
   sparkline,
   statusOf,
@@ -48,8 +51,11 @@ const EMPTY: Weather = {
   compacted: false,
   limits: [],
   limitsAsOf: null,
+  limitsAt: 0,
+  seen: '',
   turnStartLimits: null,
   lastLimitDelta: {},
+  lastStart: null,
   instanceId: '',
   usd: null,
   costFrom: null,
@@ -78,9 +84,13 @@ const EMPTY: Weather = {
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
 
-// Last live limits, kept across sessions so a new session can show them at once.
+// The newest reading any session took (`at`: when it was read), shared so a new session shows it at
+// once and an idle one follows the others. Never the account's Fable limit: that has its own key.
 const STORE_KEY = 'lastLimits'
 type Saved = { limits: Limit[]; at: number }
+// The account's own usage answer, as the last session to ask got it.
+const SERVER_KEY = 'server'
+type Server = { at: number; limits: Limit[]; allowance?: number }
 // Each session's spend under its own key, so no two sessions write one key;
 // the learned rates beside them.
 const SPEND_PREFIX = 'spend.'
@@ -89,8 +99,9 @@ const RATES_KEY = 'rates.v2'
 const OLD_RATES_KEY = 'rates'
 type SpendEntry = { usd: number; at: number }
 type Rates = Record<string, Anchor>
-// A session idle this long has stopped: its entry goes.
-const SPEND_TTL_MS = 8 * 24 * 60 * 60_000
+// A session idle this long has stopped: its entry goes. One still open re-saves its own daily.
+const DAY_MS = 24 * 60 * 60_000
+const SPEND_TTL_MS = 8 * DAY_MS
 // Another session's saved reading this fresh is a fair baseline for a turn.
 const FRESH_MS = 60_000
 
@@ -105,8 +116,11 @@ type Since = { at: number; resetsAt?: string }
 const NO_LIMITS = {
   limits: [],
   limitsAsOf: null,
+  limitsAt: 0,
+  seen: '',
   turnStartLimits: null,
   lastLimitDelta: {},
+  lastStart: null,
   modelSpent: { usd: {} },
   modelTotals: { usd: {} },
   turnStartFable: null,
@@ -118,6 +132,7 @@ const NO_LIMITS = {
 } satisfies Partial<Weather>
 
 const AGENT_COLOR = '#5fb8b4'
+const STATE_WORDS = { running: 'running', done: 'done', idle: 'waiting', failed: 'failed', killed: 'stopped' } as const
 const ICON_COLORS = { running: AGENT_COLOR, done: 'green', failed: 'red', killed: undefined, idle: undefined } as const
 // Engine forks seen (compaction, memory), kept so each is looked up once.
 const MAX_FORKS = 32
@@ -135,19 +150,39 @@ const copyLimits = (limits: readonly SessionRateLimit[]): Limit[] =>
 /**
  * A new reading. What it added is booked to the family of `modelId` (the
  * model that answered; the main loop's by default), in the parent limit's
- * window; with no parent (an API key) nothing is booked.
+ * window; with no parent (an API key) nothing is booked. `fresh`: taken right
+ * after a reply, so its limits are the newest there are.
  */
-const withUsage = (w: Weather, usage: Usage, now: number, modelId?: string | null): Weather => {
-  const next = readUsage(w, usage, now)
+const withUsage = (w: Weather, usage: Usage, now: number, modelId?: string | null, fresh = false): Weather => {
+  const next = readUsage(w, usage, now, fresh)
   const parent = parentOf(next.limits)
   if (!parent) return next
   const family = familyOf(modelId ?? w.model)
   return { ...next, modelSpent: bookModel(w.modelSpent ?? EMPTY.modelSpent, family, next.spent - w.spent, parent.resetsAt) }
 }
 
-const readUsage = (w: Weather, usage: Usage, now: number): Weather => {
-  // The last response's reading stays put after its window resets: fresh again.
-  const live = reviveLimits(copyLimits(usage.rateLimits), now)
+const readUsage = (w: Weather, usage: Usage, now: number, fresh: boolean): Weather => {
+  const raw = copyLimits(usage.rateLimits)
+  const seen = raw.length > 0 ? JSON.stringify(raw) : w.seen
+  // The engine repeats its last reading until a reply brings another. A repeat says nothing new,
+  // and what is held may be newer: another session's reading, or the account's own answer.
+  const isNew = raw.length > 0 && (fresh || seen !== w.seen)
+  let limits = w.limits
+  let turnStartLimits = w.turnStartLimits
+  if (isNew) {
+    const live = raw.map(l => {
+      const held = w.limits.find(x => x.kind === l.kind)
+      if (!held || !isSameReading(held, l) || held.percentUsed <= l.percentUsed) return l
+      // Two sources can round a point apart: the higher stands.
+      if (held.percentUsed - l.percentUsed <= 1) return { ...l, percentUsed: held.percentUsed }
+      // Lower in the same window is no reset: the running turn counts from it.
+      const start = turnStartLimits?.[l.kind]
+      if (start !== undefined && start > l.percentUsed) turnStartLimits = { ...turnStartLimits, [l.kind]: l.percentUsed }
+      return l
+    })
+    // The Fable limit comes from the account's usage answer (askServer), never in a reading: kept.
+    limits = [...live, ...w.limits.filter(l => isFableKind(l.kind) && !live.some(x => x.kind === l.kind))]
+  }
   const ledger = usage.cost ? addSpend(w, usage.cost.usd, usage.startedAt, w.clearedAt) : undefined
   return {
     ...w,
@@ -158,10 +193,67 @@ const readUsage = (w: Weather, usage: Usage, now: number): Weather => {
     // No figure yet keeps what we had: the start estimate, or null after a compaction.
     tokens: usage.context.tokens ?? w.tokens,
     isEstimate: usage.context.tokens === undefined && w.isEstimate,
-    // The Fable limit comes from the account's usage answer (askServer), never in a reading: kept.
-    limits: live.length > 0 ? [...live, ...w.limits.filter(l => isFableKind(l.kind) && !live.some(x => x.kind === l.kind))] : w.limits,
-    limitsAsOf: live.length > 0 ? null : w.limitsAsOf,
+    // A reading stays put after its window resets: fresh again.
+    limits: reviveLimits(limits, now),
+    turnStartLimits,
+    limitsAsOf: isNew ? null : w.limitsAsOf,
+    // The first reading a session ever sees may be an old one: its age is not known.
+    limitsAt: isNew && (fresh || w.seen !== '') ? now : w.limitsAt,
+    seen,
     now,
+  }
+}
+
+/** The limits rates are learned from and other sessions are told: not the account's Fable figure, not a window that reset. */
+const sharable = (limits: readonly Limit[]): Limit[] => limits.filter(l => l.kind !== FABLE_KIND && !l.isReset)
+
+/** Another session's newer reading, where it says more than this one holds. */
+const withReading = (w: Weather, saved: Saved, now: number): Weather => {
+  const limits = mergeLimits(w.limits, reviveLimits(sharable(saved.limits), now), now)
+  return { ...w, limits: limits === w.limits ? w.limits : [...limits], limitsAt: Math.max(w.limitsAt, saved.at) }
+}
+
+/**
+ * The account's own answer: its Fable limit beside the others (or none, when
+ * it lists none), and its Session and Week where they say more than the last
+ * reply did (a reply's reading is taken before that reply is billed).
+ */
+const withAnswer = (w: Weather, answer: Server, now: number): Weather => {
+  const own = w.limits.filter(l => l.kind !== FABLE_KIND)
+  const merged = mergeLimits(own, reviveLimits(sharable(answer.limits), now), now)
+  const next: Weather = {
+    ...w,
+    limits: [...merged, ...reviveLimits(answer.limits.filter(l => l.kind === FABLE_KIND), now)],
+    limitsAt: merged === own ? w.limitsAt : Math.max(w.limitsAt, answer.at),
+    fableAllowance: answer.allowance ?? null,
+    serverAt: Math.max(w.serverAt, answer.at),
+  }
+  // Between turns, the last turn's figures follow the truer reading.
+  return merged !== own && next.turnStartSpent === null && next.lastStart ? withLast(next, next.lastStart) : next
+}
+
+/**
+ * The figures of the turn that began at `start`, as they stand now: each
+ * limit's change (this session's share where a rate is known) and Fable's
+ * part of the parent's. With no baseline and no rate, the last figures stay.
+ * Not the Fable limit's own: it is read between turns, never within one.
+ */
+const withLast = (w: Weather, start: TurnStart): Weather => {
+  const spent = start.spent === null ? null : w.spent - start.spent
+  const deltas = Object.fromEntries(
+    w.limits.flatMap(l => {
+      if (isFableKind(l.kind)) return []
+      const d = turnDelta(l.percentUsed, start.limits?.[l.kind], spent, w.rates[l.kind])
+      return d === undefined ? [] : [[l.kind, d]]
+    }),
+  )
+  const parent = parentOf(w.limits)
+  const parentDelta = parent && turnDelta(parent.percentUsed, start.limits?.[parent.kind], spent, w.rates[parent.kind])
+  const fableDelta = parent && fableTurn(fableUsdSince(w, start.fable), spent ?? 0, parentDelta, w.rates[parent.kind])
+  return {
+    ...w,
+    lastLimitDelta: Object.keys(deltas).length > 0 ? deltas : w.lastLimitDelta,
+    lastFableDelta: fableDelta ?? w.lastFableDelta,
   }
 }
 
@@ -184,26 +276,48 @@ const withModel = (w: Weather, id: string): Weather => {
   return { ...w, model: id, effort: null, switchedFrom: switched, switchSeen: false }
 }
 
-async function saveLimits($: EngineInterface, usage: Usage, now: number) {
-  const live = copyLimits(usage.rateLimits)
-  if (live.length > 0) await $.store.set(STORE_KEY, { limits: live, at: now } satisfies Saved)
+/**
+ * Shares this session's reading with the others, unless one as new is there
+ * already; says whether it did. Only then is this reading the newest there is:
+ * a rate learned from an older one would be measured against too much spend.
+ */
+async function saveLimits($: EngineInterface, w: Weather): Promise<boolean> {
+  const live = sharable(w.limits)
+  if (w.limitsAsOf !== null || live.length === 0) return false
+  const saved = (await $.store.get(STORE_KEY)) as Saved | undefined
+  // One as new and no different is the same reading (this session took it from there).
+  const isSame = saved !== undefined && saved.at === w.limitsAt && JSON.stringify(saved.limits) === JSON.stringify(live)
+  if (saved && (saved.at > w.limitsAt || isSame)) return false
+  await $.store.set(STORE_KEY, { limits: live, at: w.limitsAt } satisfies Saved)
+  return true
 }
 
-// Puts this session's spend where the other sessions can count it.
+const hasCount = (ledger: ModelLedger | undefined): boolean => Object.values(ledger?.usd ?? {}).some(n => n > 0)
+
+// The count of Fable is drawn only while the account gives no Fable limit of its own.
+const showsCount = (w: Weather): boolean => !w.limits.some(l => l.kind === FABLE_KIND)
+
+// Puts this session's spend, and its count by model, where the other sessions can add them up.
+// A session that spent nothing leaves no entry: a missing one counts as 0.
 async function saveSpend($: EngineInterface, w: Weather, now: number) {
   if (!w.instanceId) return
-  await $.store.set(SPEND_PREFIX + w.instanceId, { usd: w.spent, at: now } satisfies SpendEntry)
-  // Its count by model too, while there is a limit to count against.
-  if (parentOf(w.limits) && w.modelSpent) {
+  if (w.spent > 0) await $.store.set(SPEND_PREFIX + w.instanceId, { usd: w.spent, at: now } satisfies SpendEntry)
+  if (parentOf(w.limits) && hasCount(w.modelSpent)) {
     await $.store.set(MODELS_PREFIX + w.instanceId, { ...w.modelSpent, at: now } satisfies ModelEntry)
-    await countModels($, now)
   }
+}
+
+// A session open for days re-saves its entry daily, so it is never dropped as stopped.
+async function touchSpend($: EngineInterface, w: Weather, now: number) {
+  if (!w.instanceId || w.spent <= 0) return
+  const entry = (await $.store.get(SPEND_PREFIX + w.instanceId)) as SpendEntry | undefined
+  if (!entry || now - entry.at > DAY_MS) await saveSpend($, w, now)
 }
 
 /**
  * Adds up the other sessions' counts of the parent's current window, drops
- * old ones, and notes when the count began (once, the first time anything
- * is booked: "since Thu" shows until that window resets).
+ * old and empty ones, and notes when the count began (once, the first time
+ * anything is booked: "since Thu" shows until that window resets).
  */
 async function countModels($: EngineInterface, now: number) {
   try {
@@ -214,11 +328,14 @@ async function countModels($: EngineInterface, now: number) {
       if (!key.startsWith(MODELS_PREFIX) || key === SINCE_KEY) continue
       const entry = (await $.store.get(key)) as ModelEntry | undefined
       if (!entry) continue
-      if (now - entry.at > SPEND_TTL_MS) {
+      const isOwn = key === MODELS_PREFIX + w.instanceId
+      // Stopped, a week that is over, or nothing counted: it can never add anything.
+      const isOver = entry.resetsAt !== undefined && Date.parse(entry.resetsAt) <= now
+      if (now - entry.at > SPEND_TTL_MS || (!isOwn && (isOver || !hasCount(entry)))) {
         await $.store.delete(key)
         continue
       }
-      if (key === MODELS_PREFIX + w.instanceId || parent?.resetsAt === undefined) continue
+      if (isOwn || parent?.resetsAt === undefined) continue
       for (const [family, usd] of Object.entries(sumLedgers([entry], parent.resetsAt))) others[family] = (others[family] ?? 0) + usd
     }
     let since = (await $.store.get(SINCE_KEY)) as Since | undefined
@@ -231,6 +348,8 @@ async function countModels($: EngineInterface, now: number) {
     }
     const fableSince = since?.resetsAt !== undefined && parent && sameWindow(since.resetsAt, parent.resetsAt) ? since.at : null
     const modelTotals: ModelLedger = parent?.resetsAt === undefined ? { usd: {} } : { usd: others, resetsAt: parent.resetsAt }
+    // Nothing new: no write, so nothing is drawn again.
+    if (fableSince === w.fableSince && JSON.stringify(modelTotals) === JSON.stringify(w.modelTotals)) return
     await update($, weather, cur => ({ ...cur, modelTotals, fableSince }))
   } catch {
     // The row shows what it had; the next save counts again.
@@ -247,37 +366,64 @@ async function dropModels($: EngineInterface) {
 }
 
 // The account's usage answer: what /usage and claude.ai read. Claude Code passes a mod no Fable limit, but its
-// answer holds one. Asked with the session's own login, at most once a minute.
+// answer holds one, and the account's Session and Week as they stand now. Asked with the session's own login,
+// at most once a minute on this computer: every session shares the answer.
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage?skip_spend=1'
 const SERVER_EVERY_MS = 60_000
 
 /**
- * Puts the real Fable limit beside the others, or takes it away when the
- * answer lists none; an answer of another shape, or none at all (no login,
- * a gateway, traffic switched off), leaves things as they are: the row
+ * Takes the account's answer: one another session got within the minute, or
+ * a new one. An answer of another shape, or none at all (no login, a
+ * gateway, traffic switched off), leaves things as they are: the Fable row
  * falls back to the mod's own count.
  */
 async function askServer($: EngineInterface) {
   try {
     const now = await $.clock.now()
-    if (now - ((await read($, weather)).serverAt ?? 0) < SERVER_EVERY_MS) return
-    await update($, weather, cur => ({ ...cur, serverAt: now, serverDue: false }))
+    const shared = (await $.store.get(SERVER_KEY)) as Server | undefined
+    const w = await read($, weather)
+    const isFresh = shared !== undefined && now - shared.at < SERVER_EVERY_MS
+    if (isFresh ? shared.at <= w.serverAt : now - (w.serverAt ?? 0) < SERVER_EVERY_MS) return
+    // Its own ask answers for what ended before it; another session's answer may not.
+    if (!isFresh) await update($, weather, cur => ({ ...cur, serverAt: now, serverDue: false }))
     const auth = await $.session.authorize()
     if (auth?.kind !== 'bearer') return
+    if (isFresh) {
+      await update($, weather, cur => withAnswer(cur, shared, now))
+      return
+    }
     const res = await $.http.fetch(USAGE_URL, { headers: { 'Content-Type': 'application/json' }, auth: auth.handle })
     if (!res.ok) return
-    const fable = serverFable(res.text)
-    if (!fable) return
-    await update($, weather, cur => ({
-      ...cur,
-      limits: [...cur.limits.filter(l => !isFableKind(l.kind)), ...(fable.limit ? reviveLimits([fable.limit], now) : [])],
-      fableAllowance: fable.allowance ?? null,
-    }))
+    const answer = serverLimits(res.text)
+    if (!answer) return
+    const entry: Server = { at: now, ...answer }
+    await $.store.set(SERVER_KEY, entry)
+    await update($, weather, cur => withAnswer(cur, entry, now))
   } catch {
-    // The count stands in until the next answer.
+    // What is held stands until the next answer.
   }
 }
 
+/**
+ * Takes what another session read, or was told by the account, when it is
+ * newer than what this one holds: an idle session's bars follow the others.
+ * Never for a session with no limits of its own (an API key).
+ */
+async function syncShared($: EngineInterface, now: number) {
+  try {
+    const w = await read($, weather)
+    if (w.limits.length === 0) return
+    const saved = (await $.store.get(STORE_KEY)) as Saved | undefined
+    const answer = (await $.store.get(SERVER_KEY)) as Server | undefined
+    if (!(saved && saved.at > w.limitsAt) && !(answer && answer.at > w.serverAt)) return
+    await update($, weather, cur => {
+      const next = saved && saved.at > cur.limitsAt ? withReading(cur, saved, now) : cur
+      return answer && answer.at > next.serverAt ? withAnswer(next, answer, now) : next
+    })
+  } catch {
+    // The bars show what they had; the next minute looks again.
+  }
+}
 
 const ratesOf = (rates: Rates): Record<string, number> =>
   Object.fromEntries(Object.entries(rates).flatMap(([kind, a]) => (a.rate === null ? [] : [[kind, a.rate]])))
@@ -296,7 +442,8 @@ async function learn($: EngineInterface, live: readonly Limit[], now: number): P
     if (!key.startsWith(SPEND_PREFIX)) continue
     const entry = (await $.store.get(key)) as SpendEntry | undefined
     if (!entry) continue
-    if (now - entry.at > SPEND_TTL_MS) await $.store.delete(key)
+    // Stopped, or never spent anything (a missing entry counts as 0): it goes.
+    if (now - entry.at > SPEND_TTL_MS || !(entry.usd > 0)) await $.store.delete(key)
     else spend[key.slice(SPEND_PREFIX.length)] = entry.usd
   }
   const next: Rates = { ...rates }
@@ -355,20 +502,30 @@ async function ensureLoop($: EngineInterface, id: string) {
   })
 }
 
-async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, loop?: string, modelId?: string | null) {
+/**
+ * A reading into the state, its spend to the loop and the model it followed.
+ * `persist` (a measurement the engine pushed): shared with the other sessions
+ * and learned from too.
+ */
+async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, loop?: string, modelId?: string | null, fresh = false) {
   try {
     const now = await $.clock.now()
     let before = 0
+    let hadCount = false
     const w = await update($, weather, cur => {
       before = cur.spent
-      // An engine fork (no agent by that id) runs for the main loop: its model.
-      const next = withUsage(cur, usage, now, loop === undefined || cur.agents[loop] ? modelId : undefined)
-      return credit(next, loop, next.spent - cur.spent)
+      hadCount = hasCount(cur.modelSpent)
+      const taken = withUsage(cur, usage, now, modelId, fresh)
+      const next = credit(taken, loop, taken.spent - cur.spent)
+      // Between your turns, what is spent (a background agent's replies) still counts as the last turn's.
+      return next.turnStartSpent === null && next.lastStart && next.spent > cur.spent ? withLast(next, next.lastStart) : next
     })
     if (persist || w.spent !== before) await saveSpend($, w, now)
+    // Every session's counts are added up again when it matters: a pushed measurement, or this
+    // session's first count of the window ("since" is noted then). Not at every reply.
+    if (showsCount(w) && (persist || (!hadCount && hasCount(w.modelSpent)))) await countModels($, now)
     if (persist) {
-      await saveLimits($, usage, now)
-      const rates = await learn($, copyLimits(usage.rateLimits), now)
+      const rates = await learn($, (await saveLimits($, w)) ? sharable(w.limits) : [], now)
       await update($, weather, cur => ({ ...cur, rates }))
     }
   } catch {
@@ -394,36 +551,24 @@ async function noteCompaction($: EngineInterface, agentId: string | undefined, i
   }
 }
 
-// Each limit's change over the turn ending now, this session's share where a
-// rate is known; with no baseline and no rate, the last figures stay. Not the
-// Fable limit's: it is read between turns, so it never moves within one.
-const lastDeltas = (w: Weather): Record<string, number> => {
-  const spent = w.turnStartSpent === null ? null : w.spent - w.turnStartSpent
-  const deltas = Object.fromEntries(
-    w.limits.flatMap(l => {
-      if (isFableKind(l.kind)) return []
-      const d = turnDelta(l.percentUsed, w.turnStartLimits?.[l.kind], spent, w.rates[l.kind])
-      return d === undefined ? [] : [[l.kind, d]]
-    }),
-  )
-  return Object.keys(deltas).length > 0 ? deltas : w.lastLimitDelta
-}
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
 
-    // Shows a window whose reset time has passed as fresh, live or saved,
-    // until the next reading.
-    // Other sessions' Fable counts, and "since" going at the reset, follow;
-    // then the account's answer, for a turn that ended too soon after the last.
+    // Each minute: a window whose reset time has passed shows as fresh; what the
+    // other sessions read or were told since is taken; their Fable counts, and
+    // "since" going at the reset, follow; then the account's answer, for a turn
+    // that ended too soon after the last ask.
     $.clock.every(60_000, () => {
       void $.clock
         .now()
         .then(async at => {
           await update($, weather, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at }))
-          await countModels($, at)
-          if ((await read($, weather)).serverDue) await askServer($)
+          await syncShared($, at)
+          const w = await read($, weather)
+          if (showsCount(w)) await countModels($, at)
+          if (w.serverDue) await askServer($)
+          await touchSpend($, w, at)
         })
         .catch(() => {})
     })
@@ -453,15 +598,21 @@ export const register: Register = on => {
           isEstimate: usage.context.tokens === undefined && estimate !== undefined,
           limits: live.length > 0 ? live : saved ? reviveLimits(saved.limits, now) : [],
           limitsAsOf: live.length > 0 || !saved ? null : saved.at,
+          // A reading the engine already held is of unknown age; a saved one says when it was read.
+          limitsAt: live.length > 0 ? cur.limitsAt : (saved?.at ?? 0),
+          seen: live.length > 0 ? JSON.stringify(live) : cur.seen,
           now,
         }))
       }
     } catch {
       // No first reading: the band fills in from the first response.
     }
-    // The real Fable figure, else the saved Fable counts, show at once.
-    await askServer($)
-    await countModels($, await $.clock.now().catch(() => 0))
+    // What is saved shows at once: the account's last answer, the Fable counts.
+    // A new answer follows, not waited for: the session's start is not held by the network.
+    const at = await $.clock.now().catch(() => 0)
+    await syncShared($, at)
+    await countModels($, at)
+    void askServer($)
 
     // Outside the gate above, so a hot reload of an older state fills it too.
     try {
@@ -491,21 +642,22 @@ export const register: Register = on => {
     try {
       const now = await $.clock.now()
       const usage = await $.session.usage().catch(() => undefined)
-      const saved = (await $.store.get(STORE_KEY).catch(() => undefined)) as Saved | undefined
-      const fresh = saved && now - saved.at < FRESH_MS ? saved : undefined
       const rates = await learn($, [], now).catch(() => undefined)
+      // The other sessions' newer reading first: the turn counts from where the account stands now.
+      await syncShared($, now)
       await update($, weather, cur => {
         const w = withInstance(usage ? withUsage(cur, usage, now) : cur)
-        // Limits from an earlier session are not a fair baseline; another
-        // session's reading from just now is.
-        const base = w.limitsAsOf === null ? w.limits : fresh?.limits
+        // Limits only saved by an earlier session are not a fair baseline, unless read just now.
+        const isFair = w.limitsAsOf === null || now - w.limitsAt < FRESH_MS
         return {
           ...w,
           rates: rates ?? w.rates,
           turnStartTokens: w.tokens,
           turnStartSpent: w.spent,
           turnStartFable: w.modelSpent?.usd[FABLE] ?? 0,
-          turnStartLimits: base ? Object.fromEntries(base.map(l => [l.kind, l.percentUsed])) : null,
+          turnStartLimits: isFair ? Object.fromEntries(w.limits.map(l => [l.kind, l.percentUsed])) : null,
+          // The turn before is over for good: what is spent from here is this one's.
+          lastStart: null,
           // Finished agents were shown through the turn after: they go now.
           agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
           // A turn on the new model has begun: its end clears the switch note.
@@ -559,7 +711,11 @@ export const register: Register = on => {
     // The main loop's model and effort as sent; a subagent's are its own.
     if (e.agentId === undefined) {
       try {
-        await update($, weather, cur => ({ ...withModel(cur, e.model), effort }))
+        const cur = await read($, weather)
+        const named = withModel(cur, e.model)
+        // Most requests name the same model and effort: no write, nothing drawn again.
+        const isSame = named.model === cur.model && named.switchedFrom === cur.switchedFrom && named.switchSeen === cur.switchSeen
+        if (!isSame || cur.effort !== effort) await update($, weather, w => ({ ...withModel(w, e.model), effort }))
       } catch {
         // The name stays as it was until the next request.
       }
@@ -573,8 +729,9 @@ export const register: Register = on => {
         await ensureLoop($, id)
         await update($, weather, cur => withAgent(cur, id, { model, effort }))
       }
-      // This response's cost goes to the loop that asked for it, and to its model.
-      await applyUsage($, await $.session.usage(), false, e.agentId, model)
+      // This response's cost goes to the loop that asked for it, and to its model
+      // (an engine fork's too: a compaction's replies are booked to the model that wrote them).
+      await applyUsage($, await $.session.usage(), false, e.agentId, model, true)
     } catch {
       // A failed read only skips one refresh; never disturb the turn.
     }
@@ -595,8 +752,11 @@ export const register: Register = on => {
         await update($, weather, cur => {
           const agent = cur.agents[id]
           if (!agent) return cur
-          return withAgent(cur, id, { status: endStatus(e.reason, agent.teammate), endedAt: now, model: e.usage?.model ?? agent.model })
+          const ended = withAgent(cur, id, { status: endStatus(e.reason, agent.teammate), endedAt: now, model: e.usage?.model ?? agent.model })
+          // Its last reply is not in any reading yet (a reading is taken before its reply is billed).
+          return { ...ended, serverDue: true }
         })
+        void askServer($)
       } catch {
         // It stays as last seen.
       }
@@ -608,9 +768,12 @@ export const register: Register = on => {
       const now = await $.clock.now()
       // Ended before any response (Esc at once, an API error): not a turn to count.
       const counts = e.reason === 'answer' || e.usage !== undefined
-      const spending = usage ? withUsage(await read($, weather), usage, now) : undefined
-      if (spending) await saveSpend($, spending, now)
-      const rates = await learn($, usage ? copyLimits(usage.rateLimits) : [], now).catch(() => undefined)
+      const held = await read($, weather)
+      const spending = usage ? withUsage(held, usage, now) : held
+      if (usage) await saveSpend($, spending, now)
+      // Rates are learned only from the newest reading there is: a turn that got no reply has none.
+      const isNewest = await saveLimits($, spending).catch(() => false)
+      const rates = await learn($, isNewest ? sharable(spending.limits) : [], now).catch(() => undefined)
       await update($, weather, cur => {
         const w = { ...(usage ? withUsage(cur, usage, now) : cur), rates: rates ?? cur.rates }
         const ended = {
@@ -622,12 +785,8 @@ export const register: Register = on => {
         }
         if (!counts) return ended
 
-        // Fable's part of the parent's change; with none to tell, the last figure stays.
-        const parent = parentOf(w.limits)
-        const turnSpent = w.turnStartSpent === null ? null : w.spent - w.turnStartSpent
-        const parentDelta = parent && turnDelta(parent.percentUsed, w.turnStartLimits?.[parent.kind], turnSpent, w.rates[parent.kind])
-        const fableDelta = parent && fableTurn(fableTurnUsd(w), turnSpent ?? 0, parentDelta, w.rates[parent.kind])
-
+        const start: TurnStart = { spent: w.turnStartSpent, limits: w.turnStartLimits, fable: w.turnStartFable }
+        const figures = withLast(w, start)
         const tokens = usage?.context.tokens
         const last = w.history.at(-1)
         const before = last ?? w.turnStartTokens
@@ -640,16 +799,19 @@ export const register: Register = on => {
           lastCompactSpent: measured ? (w.compacted ? w.compactSpent : null) : w.lastCompactSpent,
           compactSpent: measured ? 0 : w.compactSpent,
           compacted: measured ? false : w.compacted,
-          lastLimitDelta: lastDeltas(w),
-          lastFableDelta: fableDelta ?? w.lastFableDelta,
-          // Its Fable use is not in the account's figure yet: asked below, or by the minute timer.
+          lastLimitDelta: figures.lastLimitDelta,
+          lastFableDelta: figures.lastFableDelta,
+          // Kept until the next turn starts: a background agent's later replies still count as this turn's.
+          lastStart: start.spent === null ? null : start,
+          // Its last reply is not in any reading yet: the account is asked below, or by the minute timer.
           serverDue: true,
           // A whole turn ran on the new model: the switch note has been read.
           ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
       })
-      if (usage) await saveLimits($, usage, now)
-      await askServer($)
+      if (showsCount(spending)) await countModels($, now)
+      // Not waited for: the turn's end is not held by the network.
+      void askServer($)
     } catch {
       // A failed reading leaves the band as it was; the turn itself is done.
     }
@@ -670,6 +832,7 @@ export const register: Register = on => {
       try {
         await update($, weather, w => ({ ...w, ...NO_LIMITS }))
         await $.store.delete(STORE_KEY)
+        await $.store.delete(SERVER_KEY)
         await dropModels($)
       } catch {
         // Shown again at the next reading.
@@ -677,7 +840,7 @@ export const register: Register = on => {
     }
     // Its cost carries no ledger start, so a stale one can't be told from a
     // /clear: spend is read where `$.session.usage()` gives one.
-    await applyUsage($, { context: e.context, rateLimits: e.rateLimits }, true)
+    await applyUsage($, { context: e.context, rateLimits: e.rateLimits }, true, undefined, undefined, e.changed.includes('rateLimits'))
     return next(e)
   })
 
@@ -710,7 +873,10 @@ export const register: Register = on => {
         window: w.window,
         limits: w.limits,
         limitsAsOf: w.limitsAsOf,
+        limitsAt: w.limitsAt,
+        seen: w.seen,
         lastLimitDelta: w.lastLimitDelta,
+        lastStart: w.lastStart,
         instanceId: w.instanceId,
         usd: w.usd,
         costFrom: w.costFrom,
@@ -739,6 +905,7 @@ export const register: Register = on => {
     } else if (e.reason === 'logout') {
       await update($, weather, w => ({ ...w, ...NO_LIMITS }))
       await $.store.delete(STORE_KEY)
+      await $.store.delete(SERVER_KEY)
       await dropModels($)
     }
     return next(e)
@@ -806,6 +973,12 @@ export const register: Register = on => {
     if (entries.length > 0 && !isChip) {
       const running = entries.filter(x => x.status === 'running').length
       if (viewed && room >= 2) {
+        // Each state by its own name, the ones with none left out: a failed agent is not "done".
+        const tally = (['running', 'done', 'idle', 'failed', 'killed'] as const)
+          .map(st => [entries.filter(x => x.status === st).length, STATE_WORDS[st]] as const)
+          .filter(([n]) => n > 0)
+          .map(([n, word]) => `${n} ${word}`)
+          .join(' · ')
         const total = shareOf(entries.reduce((n, x) => n + x.spent, 0), sessionRate)
         const shown = entries.length > room - 1 ? entries.slice(0, Math.max(0, room - 2)) : entries
         agentLines = [
@@ -813,7 +986,7 @@ export const register: Register = on => {
             <Text color={AGENT_COLOR} bold>
               ⑂ Agents
             </Text>
-            <Text dimColor>{`  ${running} running · ${entries.length - running} done`}</Text>
+            <Text dimColor>{`  ${tally}`}</Text>
             {!!total && <Text color={AGENT_COLOR}>{` · +${fmtPct(total)}% of Session`}</Text>}
           </Text>,
           ...shown.map((x, i) => {
