@@ -111,13 +111,13 @@ export const fmtLeft = (ms: number): string => {
 }
 
 /**
- * Limits saved by an earlier session: a window whose reset time has passed
- * is fresh again, so it reads 0% with no known reset.
+ * Limits as they read at `now`: a window whose reset time has passed is
+ * fresh again, so it reads 0% with no known reset, marked `isReset`.
  */
-export const reviveLimits = <L extends { percentUsed: number; resetsAt?: string }>(limits: readonly L[], now: number): L[] =>
+export const reviveLimits = <L extends { percentUsed: number; resetsAt?: string; isReset?: boolean }>(limits: readonly L[], now: number): L[] =>
   limits.map(limit =>
     limit.resetsAt !== undefined && Date.parse(limit.resetsAt) <= now
-      ? { ...limit, percentUsed: 0, resetsAt: undefined }
+      ? { ...limit, percentUsed: 0, resetsAt: undefined, isReset: true }
       : limit,
   )
 
@@ -165,8 +165,8 @@ export type Spend = Record<string, number>
 export const spendSince = (snap: Readonly<Spend>, now: Readonly<Spend>): number =>
   Object.entries(now).reduce((sum, [id, usd]) => sum + Math.max(0, usd - (snap[id] ?? 0)), 0)
 
-/** One window's learned % per dollar, and where its current measurement began. */
-export type Anchor = { rate: number | null; pct: number; resetsAt?: string; snap: Spend }
+/** One window's learned % per dollar, the points it was measured over (`span`), and where its current measurement began. */
+export type Anchor = { rate: number | null; pct: number; resetsAt?: string; snap: Spend; span?: number }
 
 const MIN_USD = 1
 const MIN_PCT = 2
@@ -178,8 +178,9 @@ export const sameWindow = (a: string | undefined, b: string | undefined) =>
 /**
  * Learns how many points of a window one dollar moves, from the account's
  * reading and every session's spend since the window's first reading. A
- * long span keeps the whole-point steps from skewing it; a new window keeps
- * the old rate until it has moved enough to measure again.
+ * long span keeps the whole-point steps from skewing it. A new window keeps
+ * the old rate until its own measurement is as long, or says the old rate
+ * can't be right (readings are whole points: the true move is within 1).
  */
 export const learnRate = (
   prev: Anchor | undefined,
@@ -188,11 +189,50 @@ export const learnRate = (
 ): Anchor => {
   if (!prev || limit.percentUsed < prev.pct || !sameWindow(prev.resetsAt, limit.resetsAt)) {
     const anchor: Anchor = { rate: prev?.rate ?? null, pct: limit.percentUsed, snap: { ...spend } }
+    if (prev?.span !== undefined) anchor.span = prev.span
     return limit.resetsAt === undefined ? anchor : { ...anchor, resetsAt: limit.resetsAt }
   }
   const usd = spendSince(prev.snap, spend)
   const pct = limit.percentUsed - prev.pct
-  return usd >= MIN_USD && pct >= MIN_PCT ? { ...prev, rate: pct / usd } : prev
+  if (usd < MIN_USD || pct < MIN_PCT) return prev
+  const stands =
+    prev.rate !== null && prev.span !== undefined && prev.span > pct && prev.rate >= (pct - 1) / usd && prev.rate <= (pct + 1) / usd
+  return stands ? prev : { ...prev, rate: pct / usd, span: pct }
+}
+
+type Reading = { kind: string; percentUsed: number; resetsAt?: string; isReset?: boolean }
+
+/** Two readings of one window: both name a reset time, the same one. */
+export const isSameReading = (a: Reading, b: Reading): boolean =>
+  a.resetsAt !== undefined && b.resetsAt !== undefined && sameWindow(a.resetsAt, b.resetsAt)
+
+// A newer reading `o` from elsewhere beats `m`: the same window read higher, or a later window.
+const takes = (m: Reading, o: Reading, now: number): boolean => {
+  if (o.resetsAt === undefined) return m.resetsAt === undefined && !o.isReset && o.percentUsed > m.percentUsed
+  if (m.resetsAt === undefined) return Date.parse(o.resetsAt) > now
+  return isSameReading(m, o) ? o.percentUsed > m.percentUsed : Date.parse(o.resetsAt) > Date.parse(m.resetsAt)
+}
+
+/**
+ * `own` limits after a newer reading from elsewhere (another session, the
+ * account's own answer). A limit is taken when it reads the same window
+ * higher, or a later window; one `own` lacks is added. A window only fills,
+ * so a lower figure is never taken. Nothing taken hands back `own` itself.
+ */
+export const mergeLimits = <L extends Reading>(own: readonly L[], other: readonly L[], now: number): readonly L[] => {
+  let isChanged = false
+  const out = own.map(m => {
+    const o = other.find(x => x.kind === m.kind)
+    if (!o || !takes(m, o, now)) return m
+    isChanged = true
+    return o
+  })
+  for (const o of other) {
+    if (own.some(m => m.kind === o.kind)) continue
+    out.push(o)
+    isChanged = true
+  }
+  return isChanged ? out : own
 }
 
 /**
@@ -328,21 +368,25 @@ export const isFableKind = (kind: string): boolean =>
 /** The real Fable limit, as the mod keeps it beside the others. */
 export const FABLE_KIND = 'weekly_fable'
 
-/** A server time as ISO: seconds since 1970, or a string (microseconds and "+00:00" included). */
+/**
+ * A server time as ISO, to the minute (it says 20:59:59.58 for a 21:00 reset):
+ * seconds since 1970, or a string (microseconds and "+00:00" included).
+ */
 const isoOf = (t: unknown): string | undefined => {
   const ms = typeof t === 'number' ? t * 1000 : typeof t === 'string' ? Date.parse(t.replace(/(\.\d{3})\d+/, '$1')) : NaN
-  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString()
+  return Number.isNaN(ms) ? undefined : new Date(Math.round(ms / 60_000) * 60_000).toISOString()
 }
 
 /**
- * The Fable limit in the account's usage answer (what /usage and claude.ai
- * show): its % of Fable's own allowance, its reset, and that allowance as a %
- * of the week. Undefined when the answer has no list of limits (another
- * shape: keep counting); `{}` when the list names no Fable limit.
+ * The limits in the account's usage answer (what /usage and claude.ai show),
+ * in the mod's kinds: Session and Week where they name a reset time, and the
+ * Fable limit (its % of Fable's own allowance) with that allowance as a % of
+ * the week. Undefined when the answer has no list of limits (another shape:
+ * keep what we have); no Fable limit in the list when it names none.
  */
-export const serverFable = (
+export const serverLimits = (
   text: string,
-): { limit?: { kind: string; percentUsed: number; resetsAt?: string }; allowance?: number } | undefined => {
+): { limits: { kind: string; percentUsed: number; resetsAt?: string }[]; allowance?: number } | undefined => {
   type Entry = { kind?: unknown; percent?: unknown; resets_at?: unknown; scope?: { model?: { display_name?: unknown } } | null }
   type Share = { limit_index?: unknown; allowance_percent_of_weekly?: unknown }
   let body: { limits?: unknown; weekly_scoped_shares?: unknown } | null
@@ -353,16 +397,24 @@ export const serverFable = (
   }
   if (!body || !Array.isArray(body.limits)) return undefined
   const entries = body.limits as (Entry | null)[]
+  const read = (entry: Entry, kind: string) => {
+    const resetsAt = isoOf(entry.resets_at)
+    return { kind, percentUsed: entry.percent as number, ...(resetsAt ? { resetsAt } : {}) }
+  }
+  const limits: { kind: string; percentUsed: number; resetsAt?: string }[] = []
+  for (const [theirs, ours] of [['session', 'five_hour'], ['weekly_all', 'seven_day']] as const) {
+    const entry = entries.find(l => l?.kind === theirs && typeof l.percent === 'number')
+    // With no reset time there is no telling which window it reads.
+    if (entry && isoOf(entry.resets_at) !== undefined) limits.push(read(entry, ours))
+  }
   const at = entries.findIndex(
     l => l?.kind === 'weekly_scoped' && typeof l.percent === 'number' && /fable/i.test(String(l.scope?.model?.display_name ?? '')),
   )
-  if (at < 0) return {}
-  const entry = entries[at]!
-  const resetsAt = isoOf(entry.resets_at)
-  const limit = { kind: FABLE_KIND, percentUsed: entry.percent as number, ...(resetsAt ? { resetsAt } : {}) }
+  if (at < 0) return { limits }
+  limits.push(read(entries[at]!, FABLE_KIND))
   const shares = Array.isArray(body.weekly_scoped_shares) ? (body.weekly_scoped_shares as (Share | null)[]) : []
   const allowance = shares.find(s => s?.limit_index === at)?.allowance_percent_of_weekly
-  return typeof allowance === 'number' && allowance > 0 ? { limit, allowance } : { limit }
+  return typeof allowance === 'number' && allowance > 0 ? { limits, allowance } : { limits }
 }
 
 /** Week points as a % of Fable's own allowance (a % of the week); a reset (negative) stays as it is. */
@@ -495,16 +547,21 @@ export const fullAt = (pct: number, resetsAt: string | undefined, now: number, l
 /** A piece of a band row; shown while the row's tidy level is in [`from`, `upTo`). */
 export type Piece = { text: string; color?: string; bg?: string; bold?: boolean; dim?: boolean; from?: number; upTo?: number }
 
-const shownAt = (p: Piece, level: number) => level >= (p.from ?? 0) && (p.upTo === undefined || level < p.upTo)
+// The pieces of one level, without the blanks (column padding) left at the row's end.
+const shownAt = (pieces: readonly Piece[], level: number): Piece[] => {
+  const shown = pieces.filter(p => level >= (p.from ?? 0) && (p.upTo === undefined || level < p.upTo))
+  while (shown.length > 0 && shown.at(-1)!.bg === undefined && shown.at(-1)!.text.trim() === '') shown.pop()
+  return shown
+}
 
 /** The fullest version of a row that fits `cols`; the last level if none fits. */
 export const tidy = (pieces: readonly Piece[], cols: number): Piece[] => {
   const top = Math.max(0, ...pieces.map(p => p.upTo ?? 0))
   for (let level = 0; level < top; level++) {
-    const shown = pieces.filter(p => shownAt(p, level))
+    const shown = shownAt(pieces, level)
     if (shown.reduce((n, p) => n + p.text.length, 0) <= cols) return shown
   }
-  return pieces.filter(p => shownAt(p, top))
+  return shownAt(pieces, top)
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
