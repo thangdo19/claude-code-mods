@@ -92,7 +92,24 @@ export type Weather = {
   lastCompactSpent: number | null
   /** When a /clear ended the last conversation; the next cost ledger counts in full from it. */
   clearedAt: number | null
+  /** $ this session's replies cost by model family ("Fable"), in the parent limit's current window. */
+  modelSpent: ModelLedger
+  /** The same for every other session on this computer, added up from the store. */
+  modelTotals: ModelLedger
+  /** This session's Fable $ when the running turn began; null between turns. */
+  turnStartFable: number | null
+  /** Fable's points of the parent over the last finished turn; negative when its window reset. */
+  lastFableDelta: number | null
+  /** When the Fable count began, while that is inside the parent's current window; else null. */
+  fableSince: number | null
+  /** Fable's allowance as a % of the week (50), from the account's usage answer; null when unknown. */
+  fableAllowance: number | null
+  /** When the account's usage answer was last asked for (it is asked at most once a minute); 0 never. */
+  serverAt: number
 }
+
+/** $ by model family in one window of the parent limit (Week, or Spend). */
+export type ModelLedger = { usd: Record<string, number>; resetsAt?: string }
 
 declare module 'claude-code' {
   interface PluginState {

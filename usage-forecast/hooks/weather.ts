@@ -307,6 +307,207 @@ export const agentEntries = (agents: Readonly<Record<string, AgentLike>>): Agent
   return out
 }
 
+// ---------- the Fable row: each model family's spend, per window ----------
+
+export const FABLE = 'Fable'
+
+/** A model's family, as the counts are kept: "claude-fable-5-2" → "Fable"; "Other" for none. */
+export const familyOf = (id: string | null | undefined): string => {
+  const name = id == null ? null : fmtModel(id)
+  return name === null ? 'Other' : name.split(' ')[0]!
+}
+
+/** The long limit the Fable row hangs under: Week, else a gateway's Spend. */
+export const parentOf = <L extends { kind: string }>(limits: readonly L[]): L | undefined =>
+  limits.find(l => l.kind === 'seven_day') ?? limits.find(l => l.kind === 'spend_limit')
+
+/** A real Fable limit, should Claude Code ever report one. */
+export const isFableKind = (kind: string): boolean =>
+  /fable/i.test(kind) && !(LIMIT_KINDS as readonly string[]).includes(kind)
+
+/** The real Fable limit, as the mod keeps it beside the others. */
+export const FABLE_KIND = 'weekly_fable'
+
+/** A server time as ISO: seconds since 1970, or a string (microseconds and "+00:00" included). */
+const isoOf = (t: unknown): string | undefined => {
+  const ms = typeof t === 'number' ? t * 1000 : typeof t === 'string' ? Date.parse(t.replace(/(\.\d{3})\d+/, '$1')) : NaN
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString()
+}
+
+/**
+ * The Fable limit in the account's usage answer (what /usage and claude.ai
+ * show): its % of Fable's own allowance, its reset, and that allowance as a %
+ * of the week. Undefined when the answer has no list of limits (another
+ * shape: keep counting); `{}` when the list names no Fable limit.
+ */
+export const serverFable = (
+  text: string,
+): { limit?: { kind: string; percentUsed: number; resetsAt?: string }; allowance?: number } | undefined => {
+  type Entry = { kind?: unknown; percent?: unknown; resets_at?: unknown; scope?: { model?: { display_name?: unknown } } | null }
+  type Share = { limit_index?: unknown; allowance_percent_of_weekly?: unknown }
+  let body: { limits?: unknown; weekly_scoped_shares?: unknown } | null
+  try {
+    body = JSON.parse(text) as typeof body
+  } catch {
+    return undefined
+  }
+  if (!body || !Array.isArray(body.limits)) return undefined
+  const entries = body.limits as (Entry | null)[]
+  const at = entries.findIndex(
+    l => l?.kind === 'weekly_scoped' && typeof l.percent === 'number' && /fable/i.test(String(l.scope?.model?.display_name ?? '')),
+  )
+  if (at < 0) return {}
+  const entry = entries[at]!
+  const resetsAt = isoOf(entry.resets_at)
+  const limit = { kind: FABLE_KIND, percentUsed: entry.percent as number, ...(resetsAt ? { resetsAt } : {}) }
+  const shares = Array.isArray(body.weekly_scoped_shares) ? (body.weekly_scoped_shares as (Share | null)[]) : []
+  const allowance = shares.find(s => s?.limit_index === at)?.allowance_percent_of_weekly
+  return typeof allowance === 'number' && allowance > 0 ? { limit, allowance } : { limit }
+}
+
+/** Week points as a % of Fable's own allowance (a % of the week); a reset (negative) stays as it is. */
+export const toAllowance = (pts: number, allowance: number): number =>
+  pts < 0 ? pts : Math.min(100, Math.round((pts * 1000) / allowance) / 10)
+
+const HOUR_MS = 60 * 60_000
+
+/** A limit's window length, for its pace; undefined when it has none (Spend). */
+export const windowOf = (kind: string): number | undefined =>
+  kind.includes('five_hour') ? 5 * HOUR_MS : kind.includes('seven_day') || kind.includes('week') ? 7 * 24 * HOUR_MS : undefined
+
+/** $ each family's replies cost in one window of the parent limit (Week, or a gateway's Spend). */
+export type ModelLedger = { usd: Record<string, number>; resetsAt?: string }
+
+/** Books `usd` to a family; a ledger of another window starts over first. */
+export const bookModel = (ledger: ModelLedger, family: string, usd: number, resetsAt: string | undefined): ModelLedger => {
+  const kept = sameWindow(ledger.resetsAt, resetsAt) ? ledger.usd : {}
+  const spent = usd > 0 ? { ...kept, [family]: (kept[family] ?? 0) + usd } : kept
+  return resetsAt === undefined ? { usd: spent } : { usd: spent, resetsAt }
+}
+
+/** Every ledger of the window that resets at `resetsAt`, added up; none when it has no reset time. */
+export const sumLedgers = (ledgers: readonly ModelLedger[], resetsAt: string | undefined): Record<string, number> => {
+  const out: Record<string, number> = {}
+  if (resetsAt === undefined) return out
+  for (const l of ledgers) {
+    if (!sameWindow(l.resetsAt, resetsAt)) continue
+    for (const [family, usd] of Object.entries(l.usd)) out[family] = (out[family] ?? 0) + usd
+  }
+  return out
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10
+
+/** Fable's points of the parent: $ × rate, or the parent split by $; families scaled to the parent; ≥ 0.1. */
+export const fableShare = (usd: Readonly<Record<string, number>>, parentPct: number, rate: number | undefined): number => {
+  const fable = usd[FABLE] ?? 0
+  if (fable <= 0 || parentPct <= 0) return 0
+  const spent = Object.values(usd).filter(n => n > 0)
+  const total = spent.reduce((n, x) => n + x, 0)
+  const ptsOf = (x: number) => (rate !== undefined ? Math.max(0.1, x * rate) : (parentPct * x) / total)
+  const sum = spent.reduce((n, x) => n + ptsOf(x), 0)
+  const scale = sum > parentPct ? parentPct / sum : 1
+  return Math.min(parentPct, Math.max(0.1, round1(ptsOf(fable) * scale)))
+}
+
+/** Fable's part of a turn's parent change; never more than the parent moved; a reset reads negative. */
+export const fableTurn = (fableUsd: number, turnUsd: number, parentDelta: number | undefined, rate: number | undefined): number | undefined => {
+  if (parentDelta === undefined) return undefined
+  if (parentDelta < 0) return parentDelta
+  if (fableUsd <= 0) return 0
+  const pts = rate !== undefined ? Math.max(0.1, round1(fableUsd * rate)) : turnUsd > 0 ? round1((parentDelta * fableUsd) / turnUsd) : 0
+  return Math.min(pts, parentDelta)
+}
+
+/** One terminal cell of a bar: a block glyph in `fg` over `bg`; `fg` undefined is the default text color. */
+export type Cell = { glyph: string; fg?: string; bg: string }
+
+const eighths = (ch: string) => (ch === '█' ? 8 : ch === ' ' ? 0 : EIGHTHS.indexOf(ch))
+
+/** A bar of rising parts (each by `usageCells`); `sliver`: part 0 shows ≥ ▏; `pace` (0–1): one cell a │. */
+export const barCells = (
+  parts: readonly { to: number; color: string }[],
+  width: number,
+  track: string,
+  opts: { sliver?: boolean; pace?: number } = {},
+): Cell[] => {
+  const strs = parts.map(p => usageCells(p.to, width))
+  const cellAt = (i: number, from: number): Cell => {
+    for (let j = from; j < parts.length; j++) {
+      const k = eighths(strs[j]![i]!)
+      if (k === 0) continue
+      const over = parts.findIndex((_, m) => m > j && eighths(strs[m]![i]!) > k)
+      return { glyph: strs[j]![i]!, fg: parts[j]!.color, bg: over < 0 ? track : parts[over]!.color }
+    }
+    return { glyph: ' ', bg: track }
+  }
+  const cells = Array.from({ length: width }, (_, i) => cellAt(i, 0))
+  const first = parts[0]
+  // Anything used at all shows a sliver, over whatever else reaches into the first cell.
+  if (opts.sliver && first && first.to > 0 && width > 0 && eighths(strs[0]![0]!) === 0) {
+    const under = cellAt(0, 1)
+    cells[0] = { glyph: '▏', fg: first.color, bg: eighths(under.glyph) > 1 ? under.fg! : track }
+  }
+  if (opts.pace !== undefined && width > 0) {
+    const at = Math.min(width - 1, Math.floor(opts.pace * width))
+    const c = cells[at]!
+    cells[at] = eighths(c.glyph) >= 4 ? { glyph: '│', fg: track, bg: c.fg! } : { glyph: '│', bg: c.bg }
+  }
+  return cells
+}
+
+/** Neighbor cells drawn alike as one piece; a blank cell joins any piece on its background. */
+export const runs = (cells: readonly Cell[]): { text: string; fg?: string; bg: string }[] => {
+  const out: { text: string; fg?: string; bg: string; blank: boolean }[] = []
+  for (const c of cells) {
+    const last = out.at(-1)
+    const blank = c.glyph === ' '
+    if (last && last.bg === c.bg && (blank || last.blank || last.fg === c.fg)) {
+      last.text += c.glyph
+      if (last.blank && !blank) last.fg = c.fg
+      last.blank &&= blank
+    } else out.push({ text: c.glyph, fg: c.fg, bg: c.bg, blank })
+  }
+  return out.map(({ text, fg, bg }) => (fg === undefined ? { text, bg } : { text, fg, bg }))
+}
+
+/** How far through its window a limit is (0–1); undefined with no reset time. */
+export const paceAt = (resetsAt: string | undefined, now: number, lengthMs: number): number | undefined => {
+  if (resetsAt === undefined) return undefined
+  const left = Date.parse(resetsAt) - now
+  if (Number.isNaN(left)) return undefined
+  return Math.max(0, Math.min(1, 1 - left / lengthMs))
+}
+
+/** When the limit fills at this pace, rounded to `stepMs` (ISO); undefined if not before the reset or too early. */
+export const fullAt = (pct: number, resetsAt: string | undefined, now: number, lengthMs: number, stepMs: number): string | undefined => {
+  const elapsed = paceAt(resetsAt, now, lengthMs)
+  if (elapsed === undefined || elapsed < 0.1 || pct <= 0 || pct >= 100) return undefined
+  const at = now + ((100 - pct) / pct) * elapsed * lengthMs
+  if (at >= Date.parse(resetsAt!)) return undefined
+  return new Date(Math.round(at / stepMs) * stepMs).toISOString()
+}
+
+/** A piece of a band row; shown while the row's tidy level is in [`from`, `upTo`). */
+export type Piece = { text: string; color?: string; bg?: string; bold?: boolean; dim?: boolean; from?: number; upTo?: number }
+
+const shownAt = (p: Piece, level: number) => level >= (p.from ?? 0) && (p.upTo === undefined || level < p.upTo)
+
+/** The fullest version of a row that fits `cols`; the last level if none fits. */
+export const tidy = (pieces: readonly Piece[], cols: number): Piece[] => {
+  const top = Math.max(0, ...pieces.map(p => p.upTo ?? 0))
+  for (let level = 0; level < top; level++) {
+    const shown = pieces.filter(p => shownAt(p, level))
+    if (shown.reduce((n, p) => n + p.text.length, 0) <= cols) return shown
+  }
+  return pieces.filter(p => shownAt(p, top))
+}
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** A short weekday, in local time: "Thu". */
+export const fmtDay = (ms: number): string => DAYS[new Date(ms).getDay()]!
+
 /**
  * How many items fit on a line `cols` wide after `head`, leaving room for
  * the "+N more" that names the rest.

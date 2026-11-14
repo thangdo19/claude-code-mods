@@ -2,36 +2,40 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
 import type { Agent, Limit, Weather } from '../types'
+import { fableTurnUsd, limitRows, MODEL_COLOR, thisDeltaOf } from './rows'
 import {
   addSpend,
   AGENT_ICONS,
   agentEntries,
+  bookModel,
   endStatus,
+  FABLE,
+  fableTurn,
+  familyOf,
   fitItems,
-  LIMIT_KINDS,
-  shareOf,
-  statusOf,
-  usageCells,
   fmtLeft,
-  fmtLimitDelta,
   fmtModel,
   fmtPct,
-  fmtReset,
   fmtTokens,
-  HOT_PCT,
+  HISTORY,
   isAlias,
-  LIMIT_LABELS,
+  isFableKind,
+  learnRate,
+  parentOf,
   percentOf,
   pushHistory,
   reviveLimits,
   sameModel,
+  sameWindow,
+  serverFable,
+  shareOf,
   sparkline,
-  weatherFor,
-  learnRate,
+  statusOf,
+  sumLedgers,
   turnDelta,
-  HISTORY,
+  weatherFor,
 } from './weather'
-import type { AgentEntry, Anchor, Spend } from './weather'
+import type { AgentEntry, Anchor, ModelLedger, Spend } from './weather'
 
 const EMPTY: Weather = {
   tokens: null,
@@ -63,6 +67,13 @@ const EMPTY: Weather = {
   compactSpent: 0,
   lastCompactSpent: null,
   clearedAt: null,
+  modelSpent: { usd: {} },
+  modelTotals: { usd: {} },
+  turnStartFable: null,
+  lastFableDelta: null,
+  fableSince: null,
+  fableAllowance: null,
+  serverAt: 0,
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
 
@@ -82,12 +93,28 @@ const SPEND_TTL_MS = 8 * 24 * 60 * 60_000
 // Another session's saved reading this fresh is a fair baseline for a turn.
 const FRESH_MS = 60_000
 
-// The account has no limits (any more): nothing to show or compare against.
-const NO_LIMITS = { limits: [], limitsAsOf: null, turnStartLimits: null, lastLimitDelta: {} } satisfies Partial<Weather>
+// Each session's $ by model family in the parent limit's window, under its
+// own key; and when the count began (`models.since`), written once.
+const MODELS_PREFIX = 'models.'
+const SINCE_KEY = 'models.since'
+type ModelEntry = ModelLedger & { at: number }
+type Since = { at: number; resetsAt?: string }
 
-const TRACK = '#4a2e25'
-const LABEL_WIDTH = 9
-const MODEL_COLOR = 'permission'
+// The account has no limits (any more): nothing to show or compare against.
+const NO_LIMITS = {
+  limits: [],
+  limitsAsOf: null,
+  turnStartLimits: null,
+  lastLimitDelta: {},
+  modelSpent: { usd: {} },
+  modelTotals: { usd: {} },
+  turnStartFable: null,
+  lastFableDelta: null,
+  fableSince: null,
+  fableAllowance: null,
+  serverAt: 0,
+} satisfies Partial<Weather>
+
 const AGENT_COLOR = '#5fb8b4'
 const ICON_COLORS = { running: AGENT_COLOR, done: 'green', failed: 'red', killed: undefined, idle: undefined } as const
 // Engine forks seen (compaction, memory), kept so each is looked up once.
@@ -103,7 +130,20 @@ const withInstance = (w: Weather): Weather => (w.instanceId ? w : { ...w, instan
 const copyLimits = (limits: readonly SessionRateLimit[]): Limit[] =>
   limits.map(({ kind, percentUsed, resetsAt }) => (resetsAt === undefined ? { kind, percentUsed } : { kind, percentUsed, resetsAt }))
 
-const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
+/**
+ * A new reading. What it added is booked to the family of `modelId` (the
+ * model that answered; the main loop's by default), in the parent limit's
+ * window; with no parent (an API key) nothing is booked.
+ */
+const withUsage = (w: Weather, usage: Usage, now: number, modelId?: string | null): Weather => {
+  const next = readUsage(w, usage, now)
+  const parent = parentOf(next.limits)
+  if (!parent) return next
+  const family = familyOf(modelId ?? w.model)
+  return { ...next, modelSpent: bookModel(w.modelSpent ?? EMPTY.modelSpent, family, next.spent - w.spent, parent.resetsAt) }
+}
+
+const readUsage = (w: Weather, usage: Usage, now: number): Weather => {
   // The last response's reading stays put after its window resets: fresh again.
   const live = reviveLimits(copyLimits(usage.rateLimits), now)
   const ledger = usage.cost ? addSpend(w, usage.cost.usd, usage.startedAt, w.clearedAt) : undefined
@@ -116,7 +156,8 @@ const withUsage = (w: Weather, usage: Usage, now: number): Weather => {
     // No figure yet keeps what we had: the start estimate, or null after a compaction.
     tokens: usage.context.tokens ?? w.tokens,
     isEstimate: usage.context.tokens === undefined && w.isEstimate,
-    limits: live.length > 0 ? live : w.limits,
+    // The Fable limit comes from the account's usage answer (askServer), never in a reading: kept.
+    limits: live.length > 0 ? [...live, ...w.limits.filter(l => isFableKind(l.kind) && !live.some(x => x.kind === l.kind))] : w.limits,
     limitsAsOf: live.length > 0 ? null : w.limitsAsOf,
     now,
   }
@@ -148,8 +189,93 @@ async function saveLimits($: EngineInterface, usage: Usage, now: number) {
 
 // Puts this session's spend where the other sessions can count it.
 async function saveSpend($: EngineInterface, w: Weather, now: number) {
-  if (w.instanceId) await $.store.set(SPEND_PREFIX + w.instanceId, { usd: w.spent, at: now } satisfies SpendEntry)
+  if (!w.instanceId) return
+  await $.store.set(SPEND_PREFIX + w.instanceId, { usd: w.spent, at: now } satisfies SpendEntry)
+  // Its count by model too, while there is a limit to count against.
+  if (parentOf(w.limits) && w.modelSpent) {
+    await $.store.set(MODELS_PREFIX + w.instanceId, { ...w.modelSpent, at: now } satisfies ModelEntry)
+    await countModels($, now)
+  }
 }
+
+/**
+ * Adds up the other sessions' counts of the parent's current window, drops
+ * old ones, and notes when the count began (once, the first time anything
+ * is booked: "since Thu" shows until that window resets).
+ */
+async function countModels($: EngineInterface, now: number) {
+  try {
+    const w = await read($, weather)
+    const parent = parentOf(w.limits)
+    const others: Record<string, number> = {}
+    for (const key of await $.store.keys()) {
+      if (!key.startsWith(MODELS_PREFIX) || key === SINCE_KEY) continue
+      const entry = (await $.store.get(key)) as ModelEntry | undefined
+      if (!entry) continue
+      if (now - entry.at > SPEND_TTL_MS) {
+        await $.store.delete(key)
+        continue
+      }
+      if (key === MODELS_PREFIX + w.instanceId || parent?.resetsAt === undefined) continue
+      for (const [family, usd] of Object.entries(sumLedgers([entry], parent.resetsAt))) others[family] = (others[family] ?? 0) + usd
+    }
+    let since = (await $.store.get(SINCE_KEY)) as Since | undefined
+    const own = sumLedgers([w.modelSpent ?? EMPTY.modelSpent], parent?.resetsAt)
+    const booked = [...Object.values(others), ...Object.values(own)].some(n => n > 0)
+    if (!since && parent && booked) {
+      // A count that began at 0% missed nothing: no "since".
+      since = parent.percentUsed > 0 && parent.resetsAt !== undefined ? { at: now, resetsAt: parent.resetsAt } : { at: now }
+      await $.store.set(SINCE_KEY, since)
+    }
+    const fableSince = since?.resetsAt !== undefined && parent && sameWindow(since.resetsAt, parent.resetsAt) ? since.at : null
+    const modelTotals: ModelLedger = parent?.resetsAt === undefined ? { usd: {} } : { usd: others, resetsAt: parent.resetsAt }
+    await update($, weather, cur => ({ ...cur, modelTotals, fableSince }))
+  } catch {
+    // The row shows what it had; the next save counts again.
+  }
+}
+
+// The limits went (an API key, /logout): the counts go with them.
+async function dropModels($: EngineInterface) {
+  try {
+    for (const key of await $.store.keys()) if (key.startsWith(MODELS_PREFIX)) await $.store.delete(key)
+  } catch {
+    // Dropped after 8 days anyway.
+  }
+}
+
+// The account's usage answer: what /usage and claude.ai read. Claude Code passes a mod no Fable limit, but its
+// answer holds one. Asked with the session's own login, at most once a minute.
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage?skip_spend=1'
+const SERVER_EVERY_MS = 60_000
+
+/**
+ * Puts the real Fable limit beside the others, or takes it away when the
+ * answer lists none; an answer of another shape, or none at all (no login,
+ * a gateway, traffic switched off), leaves things as they are: the row
+ * falls back to the mod's own count.
+ */
+async function askServer($: EngineInterface) {
+  try {
+    const now = await $.clock.now()
+    if (now - ((await read($, weather)).serverAt ?? 0) < SERVER_EVERY_MS) return
+    await update($, weather, cur => ({ ...cur, serverAt: now }))
+    const auth = await $.session.authorize()
+    if (auth?.kind !== 'bearer') return
+    const res = await $.http.fetch(USAGE_URL, { headers: { 'Content-Type': 'application/json' }, auth: auth.handle })
+    if (!res.ok) return
+    const fable = serverFable(res.text)
+    if (!fable) return
+    await update($, weather, cur => ({
+      ...cur,
+      limits: [...cur.limits.filter(l => !isFableKind(l.kind)), ...(fable.limit ? reviveLimits([fable.limit], now) : [])],
+      fableAllowance: fable.allowance ?? null,
+    }))
+  } catch {
+    // The count stands in until the next answer.
+  }
+}
+
 
 const ratesOf = (rates: Rates): Record<string, number> =>
   Object.fromEntries(Object.entries(rates).flatMap(([kind, a]) => (a.rate === null ? [] : [[kind, a.rate]])))
@@ -227,13 +353,14 @@ async function ensureLoop($: EngineInterface, id: string) {
   })
 }
 
-async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, loop?: string) {
+async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, loop?: string, modelId?: string | null) {
   try {
     const now = await $.clock.now()
     let before = 0
     const w = await update($, weather, cur => {
       before = cur.spent
-      const next = withUsage(cur, usage, now)
+      // An engine fork (no agent by that id) runs for the main loop: its model.
+      const next = withUsage(cur, usage, now, loop === undefined || cur.agents[loop] ? modelId : undefined)
       return credit(next, loop, next.spent - cur.spent)
     })
     if (persist || w.spent !== before) await saveSpend($, w, now)
@@ -284,10 +411,14 @@ export const register: Register = on => {
 
     // Shows a window whose reset time has passed as fresh, live or saved,
     // until the next reading.
+    // Other sessions' Fable counts, and "since" going at the reset, follow.
     $.clock.every(60_000, () => {
       void $.clock
         .now()
-        .then(at => update($, weather, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at })))
+        .then(async at => {
+          await update($, weather, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at }))
+          await countModels($, at)
+        })
         .catch(() => {})
     })
 
@@ -322,6 +453,9 @@ export const register: Register = on => {
     } catch {
       // No first reading: the band fills in from the first response.
     }
+    // The real Fable figure, else the saved Fable counts, show at once.
+    await askServer($)
+    await countModels($, await $.clock.now().catch(() => 0))
 
     // Outside the gate above, so a hot reload of an older state fills it too.
     try {
@@ -364,6 +498,7 @@ export const register: Register = on => {
           rates: rates ?? w.rates,
           turnStartTokens: w.tokens,
           turnStartSpent: w.spent,
+          turnStartFable: w.modelSpent?.usd[FABLE] ?? 0,
           turnStartLimits: base ? Object.fromEntries(base.map(l => [l.kind, l.percentUsed])) : null,
           // Finished agents were shown through the turn after: they go now.
           agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
@@ -425,15 +560,15 @@ export const register: Register = on => {
     }
     const result = yield* next(e)
     try {
+      // The model that answered: a fallback's, where it fell back.
+      const model = result?.usage?.model ?? e.model
       if (e.agentId !== undefined) {
         const id = e.agentId
         await ensureLoop($, id)
-        // The model that answered: a fallback's, where it fell back.
-        const model = result?.usage?.model ?? e.model
         await update($, weather, cur => withAgent(cur, id, { model, effort }))
       }
-      // This response's cost goes to the loop that asked for it.
-      await applyUsage($, await $.session.usage(), false, e.agentId)
+      // This response's cost goes to the loop that asked for it, and to its model.
+      await applyUsage($, await $.session.usage(), false, e.agentId, model)
     } catch {
       // A failed read only skips one refresh; never disturb the turn.
     }
@@ -448,7 +583,8 @@ export const register: Register = on => {
         const id = e.agentId
         await ensureLoop($, id)
         const usage = await $.session.usage().catch(() => undefined)
-        if (usage) await applyUsage($, usage, false, id)
+        const model = e.usage?.model ?? (await read($, weather)).agents[id]?.model
+        if (usage) await applyUsage($, usage, false, id, model)
         const now = await $.clock.now()
         await update($, weather, cur => {
           const agent = cur.agents[id]
@@ -476,8 +612,15 @@ export const register: Register = on => {
           turnStartLimits: null,
           turnStartTokens: null,
           turnStartSpent: null,
+          turnStartFable: null,
         }
         if (!counts) return ended
+
+        // Fable's part of the parent's change; with none to tell, the last figure stays.
+        const parent = parentOf(w.limits)
+        const turnSpent = w.turnStartSpent === null ? null : w.spent - w.turnStartSpent
+        const parentDelta = parent && turnDelta(parent.percentUsed, w.turnStartLimits?.[parent.kind], turnSpent, w.rates[parent.kind])
+        const fableDelta = parent && fableTurn(fableTurnUsd(w), turnSpent ?? 0, parentDelta, w.rates[parent.kind])
 
         const tokens = usage?.context.tokens
         const last = w.history.at(-1)
@@ -492,11 +635,13 @@ export const register: Register = on => {
           compactSpent: measured ? 0 : w.compactSpent,
           compacted: measured ? false : w.compacted,
           lastLimitDelta: lastDeltas(w),
+          lastFableDelta: fableDelta ?? w.lastFableDelta,
           // A whole turn ran on the new model: the switch note has been read.
           ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
       })
       if (usage) await saveLimits($, usage, now)
+      await askServer($)
     } catch {
       // A failed reading leaves the band as it was; the turn itself is done.
     }
@@ -517,6 +662,7 @@ export const register: Register = on => {
       try {
         await update($, weather, w => ({ ...w, ...NO_LIMITS }))
         await $.store.delete(STORE_KEY)
+        await dropModels($)
       } catch {
         // Shown again at the next reading.
       }
@@ -571,12 +717,20 @@ export const register: Register = on => {
         agents: Object.fromEntries(Object.entries(w.agents).filter(([, a]) => a.status === 'running' || a.status === 'idle')),
         forks: w.forks,
         agentSpent: w.agentSpent,
+        // The Fable count belongs to the week, not to one conversation.
+        modelSpent: w.modelSpent,
+        modelTotals: w.modelTotals,
+        lastFableDelta: w.lastFableDelta,
+        fableSince: w.fableSince,
+        fableAllowance: w.fableAllowance,
+        serverAt: w.serverAt,
         // A /clear's new ledger starts at 0: its first reading counts in full.
         clearedAt: e.reason === 'clear' ? now : null,
       }))
     } else if (e.reason === 'logout') {
       await update($, weather, w => ({ ...w, ...NO_LIMITS }))
       await $.store.delete(STORE_KEY)
+      await dropModels($)
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -597,57 +751,24 @@ export const register: Register = on => {
 
     // The running turn's spend.
     const turnSpent = w.turnStartSpent == null ? 0 : w.spent - w.turnStartSpent
-    const thisDeltaOf = (limit: Limit) =>
-      working
-        ? turnDelta(limit.percentUsed, w.turnStartLimits?.[limit.kind], w.turnStartSpent === null ? null : turnSpent, w.rates[limit.kind])
-        : undefined
     // A Session share for each agent: its spend at the learned rate, or at
     // this turn's own rate before one is learned.
     const session = w.limits.find(l => l.kind === 'five_hour')
-    const sessionThis = session ? thisDeltaOf(session) : undefined
+    const sessionThis = session ? thisDeltaOf(w, working, session) : undefined
     const sessionRate =
       w.rates.five_hour ?? (sessionThis !== undefined && sessionThis > 0 && turnSpent > 0 ? sessionThis / turnSpent : undefined)
 
-    // Lines 2–4: usage limits, /usage-style bars in Claude orange, saved
-    // readings from an earlier session included.
-    const width = Math.max(10, Math.min(30, e.props.bodyColumns - LABEL_WIDTH - 80))
-    const rows = LIMIT_KINDS.flatMap(kind => {
-      const limit = w.limits.find(l => l.kind === kind)
-      if (!limit) return []
-      // This session's own share of the running turn, the account's change until a rate is learned.
-      const thisDelta = thisDeltaOf(limit)
-      // Kept while the next turn runs, so the previous answer's cost stays readable.
-      const lastDelta = w.lastLimitDelta[kind]
-      const thisText = thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this')
-      const lastText = lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last')
-      // Counted from the last refresh; the minute timer keeps it current.
-      const at = limit.resetsAt ? fmtReset(limit.resetsAt, kind !== 'five_hour') : ''
-      const reset = at ? `${fmtLeft(Date.parse(limit.resetsAt!) - w.now)} → ${at}` : ''
-      // Nearly gone: the bar and its figure turn red, as the context line does.
-      const fill = limit.percentUsed >= HOT_PCT ? 'red' : 'claude'
-      return [
-        <Text key={kind} wrap="truncate">
-          <Text color="claude" bold>
-            {LIMIT_LABELS[kind].padEnd(LABEL_WIDTH)}
+    // Lines 2–5: usage limits, /usage-style bars, saved readings from an
+    // earlier session included (rows.ts).
+    const rows = limitRows(w, e.props.bodyColumns, working).map((pieces, i) => (
+      <Text key={`l${i}`} wrap="truncate">
+        {pieces.map((p, j) => (
+          <Text key={`p${j}`} color={p.color} backgroundColor={p.bg} bold={p.bold} dimColor={p.dim}>
+            {p.text}
           </Text>
-          <Text color={fill} backgroundColor={TRACK}>
-            {usageCells(limit.percentUsed, width)}
-          </Text>
-          <Text color={fill} bold>
-            {' '}
-            {fmtPct(limit.percentUsed)}%
-          </Text>
-          {limit.percentUsed > 100 && (
-            <Text color="red" bold>
-              {` over by ${fmtPct(limit.percentUsed - 100)}%`}
-            </Text>
-          )}
-          {thisText && <Text color="claude">{` ${thisText}`}</Text>}
-          {lastText && <Text color="claude">{` ${lastText}`}</Text>}
-          <Text dimColor>{reset ? ` · ${reset}` : ' · window reset'}</Text>
-        </Text>,
-      ]
-    })
+        ))}
+      </Text>
+    ))
 
     // The agents: one line, or one row each while you view one of them. With
     // no room left above the prompt, a chip on line 1 instead.
