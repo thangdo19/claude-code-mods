@@ -339,6 +339,24 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
   const icons: [number, number, Icon][] = []
   const thoughts: [number, number][] = []
 
+  // The line at the door (approved round 12): running agents work there on a laptop, and one at a time speaks, every
+  // 2 s: each running one its job, then the count of those that truly wait (or that wait outside).
+  let speaker: string | null = null
+  let lineWords = ''
+  {
+    const line = [...sim.actors.values()].filter(a => agentOf(a.id) !== undefined && among(WAIT_SPOTS, a.dest) && a.arrivedAt >= 0 && !a.leaving)
+    const runs = (a: { id: string }) => v.secs.find(s => s.id === agentOf(a.id))?.status === 'run'
+    const run = line.filter(runs)
+    const rest = line.filter(a => !runs(a))
+    const waiting = v.secs.filter(s => !seated.includes(s.id) && s.status !== 'run').length
+    const outside = v.secs.filter(s => !seated.includes(s.id) && s.status === 'run' && !run.some(a => agentOf(a.id) === s.id)).length
+    lineWords = waiting ? waiting + ' in line' : outside ? '+' + outside + ' outside' : ''
+    // (The count is said by the first waiting one, or else by the last running one in its own turn.)
+    const by = lineWords ? (rest[0] ?? run[run.length - 1]) : undefined
+    const turns = [...run.map(a => a.id as string), ...(by ? ['count'] : [])]
+    const k = turns.length ? turns[(sim.tick >> 4) % turns.length]! : null
+    speaker = k === 'count' ? (by!.id as string) + ' count' : k
+  }
   for (const a of sim.actors.values()) {
     // Waiting a moment outside before coming in: not in the picture yet. Waiting their turn to walk out (night, the
     // Janitor): still standing where they were (round 9: they blinked out for up to 3 s).
@@ -419,8 +437,13 @@ export function renderBig(v: View, sim: BigSim, f: number, tick: number, viewing
       const sec = v.secs.find(s => s.id === id)
       lk = secLook(sim.lookOf(id) ?? sec?.order ?? 0)
       if (among(WAIT_SPOTS, a.dest)) {
-        // In line at the door, no desk yet: the first one says how many wait.
-        if (a.dest === 'wait0') bubble = [sim.queue + ' in line', 'warn']
+        // In line at the door, no desk yet (approved round 12): a running one works on a laptop; the bubbles take turns.
+        if (sec?.status === 'run') {
+          arms = 'laptop'
+          working = true
+          if (speaker === a.id) bubble = [life.hold(a.id, sec.short, sim.tick), '']
+        }
+        if (speaker === a.id + ' count') bubble = [lineWords, 'warn']
       } else if (sec) {
         working = sec.status === 'run'
         arms = sec.status === 'run' ? 'type' : sec.status === 'done' ? 'up' : sec.status === 'idle' ? 'mug' : 'down'

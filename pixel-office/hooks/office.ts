@@ -423,7 +423,7 @@ export function freeWords(v: View): string {
 /**
  * The list (approved round 4: "Everyone, fixed order"): the Manager, then every staff member on their own line, always,
  * in the same order — their job, what they just did, or what they do meanwhile (`doing`; without it, `freeWords`) —
- * then the Janitor, the agents at desks, the line at the door, the to-do count.
+ * then the Janitor, the agents at desks, the running agents at the door (round 12), the ones waiting, the to-do count.
  * `seated` is the secretaries at desks in desk order; without it (no picture) the first two are, at the agents' desks
  * in the order they are taken (`AGENT_DESKS`). `lookOf` gives an agent's look in the picture, so their dot matches
  * their clothes.
@@ -454,7 +454,11 @@ export function lines(
   const deskOf = (s: Sec) => (seated ? seated.indexOf(s.id) : AGENT_DESKS[atDesk.indexOf(s)]!)
   for (const s of [...atDesk].sort((a, b) => deskOf(a) - deskOf(b)))
     out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: 'Desk ' + (deskOf(s) + 1), what: secWhat(s), tone: secTone(s), rank: secRank(s) })
-  const waiting = v.secs.length - atDesk.length
+  // An agent with no desk that runs works at the door, on a laptop (approved round 12): its own line, as at a desk.
+  const working = v.secs.filter(s => !atDesk.includes(s) && s.status === 'run').sort((a, b) => a.order - b.order)
+  for (const s of working)
+    out.push({ dot: secDot(lookOf?.(s.id) ?? s.order), who: v.janitor ? 'Stepped out' : 'At the door', what: secWhat(s), tone: secTone(s), rank: secRank(s) })
+  const waiting = v.secs.length - atDesk.length - working.length
   if (waiting > 0) out.push({ dot: DOT.wait, who: 'In line', what: plural(waiting, 'agent waits', 'agents wait') + ' for a free desk', tone: 'warn', rank: 3 })
   if (v.todos && v.todos.length) {
     const done = v.todos.filter(t => t.status === 'completed').length

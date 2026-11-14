@@ -131,10 +131,13 @@ test('agents: a finished one woken again gets a desk back; with no picture the l
   expect(view(o, 60_001).secs.map(s => s.id)).toEqual(['b', 'c'])
   o = patchSec(o, 'a', { status: 'run', endedAt: null })
   expect(view(o, 60_002).secs.map(s => s.id).sort()).toEqual(['a', 'b', 'c'])
-  // No picture: the first two sit at desk 4, then desk 2 (the Planner's); the third waits.
-  const ls = lines(view(o, 60_002)).filter(l => /^Desk|^In line/.test(l.who))
-  expect(ls.map(l => l.who)).toEqual(['Desk 2', 'Desk 4', 'In line'])
+  // No picture: the first two sit at desk 4, then desk 2 (the Planner's); the third runs, so it has its own line at the
+  // door (approved round 12). Only an agent that truly waits is counted in line.
+  const agents = (x: typeof o) => lines(view(x, 60_002)).filter(l => /^Desk|^In line|^At the door/.test(l.who))
+  const ls = agents(o)
+  expect(ls.map(l => l.who)).toEqual(['Desk 2', 'Desk 4', 'At the door'])
   expect(ls[1]!.what).toContain('Explore')
+  expect(agents(patchSec(o, 'c', { status: 'idle' })).map(l => l.who + ' ' + l.what)).toContain('In line 1 agent waits for a free desk')
 })
 
 test('the same job three times at once is one worker with x3, not three people', async () => {

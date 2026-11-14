@@ -74,7 +74,7 @@ test('the board names the holiday when it has no to-dos (approved round 10); to-
   const vets = new BigSim()
   const sc = renderBig(run(vets, idle, 2, 2), vets, 4, 2)
   setClock(TEST_CLOCK)
-  expect([2, 3, 4, 5].map(r => words(sc, r, 32, 45))).toEqual(['Veterans Day', 'Nov 11', 'Christmas', 'Nov 1-Jan 1'])
+  expect([2, 3, 4, 5].map(r => words(sc, r, 32, 45))).toEqual(['Veterans Day', 'today!', 'Christmas', 'in 44 days'])
   expect(words(sc, 0, 31, 46)).toBe('')
   expect(words(sc, 26, 32, 47)).toBe('')
 })

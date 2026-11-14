@@ -1,5 +1,5 @@
-// The holiday the office is dressed for (approved round 10): its name, its first and last day, and the words the
-// whiteboard shows them in when it has no to-dos (the only place that names it: a list row, a TV card, a banner and a
+// The holiday the office is dressed for (approved round 10): its name, its own day and the days to it (round 12), and
+// the words the whiteboard shows them in when it has no to-dos (the only place that names it: a list row, a TV card, a banner and a
 // wall calendar were built and cut, "too many places"). Pure; the date comes from `now` (world.ts), so tests pin it
 // with `setClock`.
 
@@ -92,49 +92,43 @@ export function themesAt(now: number): Theme[] {
   if (memo?.t !== t) memo = { t, themes: themesOn(y, m, d) }
   return memo.themes
 }
-/** The next holiday after today, and in how many days (the teaser on a plain day). */
+/**
+ * The holiday's own day (approved round 12: the board counts to it, not to the end of its decor, which goes up before
+ * it and some stays after): Christmas Dec 25, Tết its first day (its decor is up a week each side, `holidaysOf`), New
+ * Year Jan 1, the rest their decor's last day.
+ */
+export function dayOf(th: Theme): number {
+  if (th.holiday === 'christmas') return dayNo(ymd(th.from)[0], 12, 25)
+  if (th.holiday === 'tet') return th.from + 7
+  return th.to
+}
+/** Christmas is over (Dec 26 – Jan 1): its decor is only still up, so the board looks ahead instead. */
+const over = (th: Theme) => th.holiday === 'christmas' && dayOf(th) < th.today
+/** "in 40 days", "tomorrow", "today!", and after the day (only Tết's decor stays then) "Happy Tết!". */
+export function countOf(th: Theme): string {
+  const n = dayOf(th) - th.today
+  return n > 1 ? 'in ' + n + ' days' : n === 1 ? 'tomorrow' : n === 0 ? 'today!' : ('Happy ' + nameOf(th.holiday, BOARD_COLS - 7) + '!').slice(0, BOARD_COLS)
+}
+
+/** The next holiday after today, and the days to its own day (the teaser when nothing is on). */
 export function nextTheme(now: number): (Theme & { inDays: number }) | null {
   themesAt(now)
   const mo = memo!
   if (mo.next === undefined) {
     mo.next = null
     for (let k = 1; k <= 400 && !mo.next; k++) {
-      const th = themesOn(...ymd(mo.t + k))[0]
-      if (th) mo.next = { ...th, inDays: k }
+      const th = themesOn(...ymd(mo.t + k)).find(x => !over(x))
+      if (th) mo.next = { ...th, today: mo.t, inDays: dayOf(th) - mo.t }
     }
   }
   return mo.next
 }
 
-/** "Nov 1 – Jan 1", "Nov 23 – 26", "Nov 11". `ascii`: for letters in the art (no long dash): "Nov 1-Jan 1". */
-export function datesOf(th: Theme, ascii = false): string {
-  const a = dayWords(th.from)
-  if (th.from === th.to) return a
-  return a + (ascii ? '-' : ' – ') + (ymd(th.from)[1] === ymd(th.to)[1] ? '' + ymd(th.to)[2] : dayWords(th.to))
-}
-/** "51 days left", "last day", "today only". */
-export const leftOf = (th: Theme): string => {
-  const n = th.to - th.today
-  return th.from === th.to ? 'today only' : n === 0 ? 'last day' : n === 1 ? '1 day left' : n + ' days left'
-}
-const inDays = (n: number) => (n === 1 ? 'tomorrow' : 'in ' + n + ' days')
-
-/** The name, the dates, the days left, then Christmas's next step; each at most `most` letters. */
-function words(th: Theme, most: number): string[] {
-  const out = [nameOf(th.holiday, most), datesOf(th, true), leftOf(th)]
-  if (th.next) {
-    const long = th.next.short + ' ' + dayWords(th.next.on)
-    out.push(long.length <= most ? long : th.next.short + ' ' + dayWords(th.next.on, true))
-  }
-  return out
-}
-/** The teaser's words. */
-const teaser = (n: Theme & { inDays: number }, most: number): string[] => ['Next up', nameOf(n.holiday, most), datesOf(n, true), inDays(n.inDays)]
-
 export type BoardLine = { text: string; ink: string }
 /**
- * The whiteboard's rows (4 at most, 14 letters each): one holiday with its dates, days left and next step; two with
- * name and dates each; on a plain day the teaser.
+ * The whiteboard's rows (4 at most, 14 letters each), approved round 12: one holiday with its day, the days to it and
+ * Christmas's next step ("Christmas", "Dec 25", "in 40 days", "wreath Nov 27"); two with name and days to it each;
+ * with none on (or Christmas over) the next one.
  */
 export function boardTheme(now: number): readonly BoardLine[] | null {
   themesAt(now)
@@ -143,10 +137,19 @@ export function boardTheme(now: number): readonly BoardLine[] | null {
   return mo.board
 }
 function boardOn(now: number): BoardLine[] | null {
-  const ths = themesAt(now)
+  const ths = themesAt(now).filter(th => !over(th))
+  const named = (th: Theme) => ({ text: nameOf(th.holiday, BOARD_COLS), ink: THEME_INK[th.holiday] })
+  const gray = (text: string) => ({ text, ink: GRAY })
   if (!ths.length) {
     const n = nextTheme(now)
-    return n ? teaser(n, BOARD_COLS).map((text, k) => ({ text, ink: k === 1 ? THEME_INK[n.holiday] : GRAY })) : null
+    return n ? [gray('Next up'), named(n), gray(dayWords(dayOf(n))), gray(countOf(n))] : null
   }
-  return ths.flatMap(th => words(th, BOARD_COLS).slice(0, ths.length > 1 ? 2 : 4).map((text, k) => ({ text, ink: k === 0 ? THEME_INK[th.holiday] : GRAY })))
+  if (ths.length > 1) return ths.flatMap(th => [named(th), gray(countOf(th))])
+  const th = ths[0]!
+  const out = [named(th), gray(dayWords(dayOf(th))), gray(countOf(th))]
+  if (th.next) {
+    const long = th.next.short + ' ' + dayWords(th.next.on)
+    out.push(gray(long.length <= BOARD_COLS ? long : th.next.short + ' ' + dayWords(th.next.on, true)))
+  }
+  return out
 }

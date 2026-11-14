@@ -19,7 +19,7 @@ See it move: [the live intro page](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16
 | **Molly**, the Planner | To-dos, tasks, schedules, briefing a new agent | A front desk (PLAN) |
 | **Leo**, the Researcher | `WebSearch`, `WebFetch` | At home, on the video call (WEB) |
 | **Paige**, the Librarian | `Skill`, `ToolSearch` | At home, on the video call (SKILL) |
-| Agents | Their own work | A front desk (AGENT); more than two wait in line at the door |
+| Agents | Their own work | A front desk (AGENT); past two, they work on laptops in line at the door |
 | The Janitor | Sweeps while Claude compacts the conversation | Every hallway |
 
 ## How to read it
@@ -28,7 +28,7 @@ See it move: [the live intro page](https://claude.ai/artifact/SUiAMU8xrVDQ2fgi16
 - **A picture bubble or none means a break** (… ha ♥ ♪).
 - **The Manager needs you**: `Your OK?`, `Question?`, `Done!`, `On hold`. The Manager picks up the red phone.
 - **The board** shows the to-do list. The Manager walks over and ticks each finished line. With no to-dos it names
-  the holiday and its dates, or the next one coming.
+  the holiday the office is dressed for, its day and the days to it, or the next one coming.
 - **The water bottle** is Claude's memory (the context): it empties as the conversation fills up, the last of the
   water blinks red, and it is full again after compacting.
 - **Small signs**: a page on Mary-Beth's desk for each edit this turn, an empty cup on the Manager's desk for every
