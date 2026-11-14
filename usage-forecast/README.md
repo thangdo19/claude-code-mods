@@ -49,7 +49,7 @@ While you view an agent's transcript (← for agents), the line becomes one row 
 | `+1.2% now` | What the running turn has used so far, agents included (only while Claude works). |
 | `full Nov 17 at 6am` | At this pace the limit runs out then, before it resets. Shown only when that happens. |
 | `37m → 6:30pm` | Time left until the limit resets, then the clock time. |
-| `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it. |
+| `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it; a turn that used no Fable shows neither. |
 
 In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `last`, then `full`) so the label, bar and figure always fit.
 
@@ -79,7 +79,7 @@ npx -p typescript tsc -p .   # type check
 - The limit bars need a Claude subscription login. With an API key they stay hidden.
 - Limits come in whole points, so a small turn often reads `<1%`.
 - It only counts Claude Code on this computer. Using claude.ai or another computer at the same time makes the per-turn figures read a little high, but never more than the whole account moved (plus 1 point, since readings are whole points).
-- Claude Code doesn't pass a mod the Fable limit, so the mod asks your account for it itself (the same usage answer `/usage` reads), with your login, at session start and after your turns, at most once a minute. If it can't (a company gateway, no login, extra traffic switched off), the row shows the mod's own count instead: what Fable replies cost this week on this computer, in Week points, with the other models as a faint shadow up to Week's figure. That count starts the day the mod is installed (`since Sat` until the week resets), leaves out claude.ai and other computers, and never reads higher than Week.
+- Claude Code doesn't pass a mod the Fable limit, so the mod asks your account for it itself (the same usage answer `/usage` reads), with your login, at session start and after your turns, at most once a minute (a turn that ends sooner is caught up within two minutes). If it can't (a company gateway, no login, extra traffic switched off), the row shows the mod's own count instead: what Fable replies cost this week on this computer, in Week points, with the other models as a faint shadow up to Week's figure. That count starts the day the mod is installed (`since Sat` until the week resets), leaves out claude.ai and other computers, and never reads higher than Week.
 
 ## Details
 

@@ -410,11 +410,15 @@ export const fableShare = (usd: Readonly<Record<string, number>>, parentPct: num
   return Math.min(parentPct, Math.max(0.1, round1(ptsOf(fable) * scale)))
 }
 
-/** Fable's part of a turn's parent change; never more than the parent moved; a reset reads negative. */
+/**
+ * Fable's part of a turn's parent change; never more than the parent moved;
+ * a reset reads negative. A turn with no Fable is 0 even when the parent's
+ * change can't be told (undefined otherwise), so no older figure stays.
+ */
 export const fableTurn = (fableUsd: number, turnUsd: number, parentDelta: number | undefined, rate: number | undefined): number | undefined => {
-  if (parentDelta === undefined) return undefined
-  if (parentDelta < 0) return parentDelta
+  if (parentDelta !== undefined && parentDelta < 0) return parentDelta
   if (fableUsd <= 0) return 0
+  if (parentDelta === undefined) return undefined
   const pts = rate !== undefined ? Math.max(0.1, round1(fableUsd * rate)) : turnUsd > 0 ? round1((parentDelta * fableUsd) / turnUsd) : 0
   return Math.min(pts, parentDelta)
 }
