@@ -106,6 +106,8 @@ export type Weather = {
   fableAllowance: number | null
   /** When the account's usage answer was last asked for (it is asked at most once a minute); 0 never. */
   serverAt: number
+  /** A turn ended since that answer was asked for: the minute timer asks again. */
+  serverDue: boolean
 }
 
 /** $ by model family in one window of the parent limit (Week, or Spend). */

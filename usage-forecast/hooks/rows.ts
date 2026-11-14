@@ -86,11 +86,12 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
     // The mark: how far through its window the limit is.
     const pace = length === undefined ? undefined : paceAt(limit.resetsAt, w.now, length)
     const withDate = !kind.includes('five_hour')
-    const isReal = isFableKind(kind) && allowance !== undefined
+    // A Fable limit is read between turns, never within one: its turn figures are the count's, or none.
+    const isFable = isFableKind(kind)
     // This session's own share of the running turn, the account's change until a rate is learned.
-    const thisDelta = isReal ? realThis : thisDeltaOf(w, working, limit)
+    const thisDelta = isFable ? realThis : thisDeltaOf(w, working, limit)
     // Kept while the next turn runs, so the previous answer's cost stays readable.
-    const lastDelta = isReal ? realLast : w.lastLimitDelta[kind]
+    const lastDelta = isFable ? realLast : w.lastLimitDelta[kind]
     const thisText = thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this')
     const lastText = lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last')
     // When it fills at this pace, if that is before the reset.

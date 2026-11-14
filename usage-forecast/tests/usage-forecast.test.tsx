@@ -1242,6 +1242,9 @@ describe('edge cases', () => {
 
       server.text = answer(19)
       await clock.advance(61_000)
+      // The turn that ended inside the minute is caught up by the minute timer.
+      expect(server.urls).toHaveLength(2)
+      expect(await fableRow(await mount($))).toMatch(/ 19% ▲ \+6% last · /)
       await $.turn.start({ text: 'more', turnId: 't2' })
       reading(s, 30, [limit('five_hour', 32, FIVE), week(46)])
       await stepOn($, 't2', 'claude-opus-5-5')
@@ -1272,6 +1275,20 @@ describe('edge cases', () => {
       server.text = answer(null)
       await turn('t2', 10)
       expect(await fableRow(await mount($))).toMatch(/ 0% · not used this week$/)
+    })
+
+    test('a Fable limit with no known share of the week shows no turn figures', async ($, on) => {
+      const { s } = setup(on)
+      // The answer names the limit, not its share of the week.
+      serve(on, JSON.stringify({ ...JSON.parse(answer(17)), weekly_scoped_shares: [] }))
+      await start($)
+      await $.turn.start({ text: 'hi', turnId: 't1' })
+      reading(s, 25, [limit('five_hour', 31, FIVE), week(45)])
+      await stepOn($, 't1', 'claude-opus-5-5')
+      expect(await fableRow(await mount($, true))).toMatch(/ 17% · /)
+      await complete($, 't1')
+      // Its % is read between turns: its change within one is always 0, and says nothing.
+      expect(await fableRow(await mount($))).toMatch(/ 17% · /)
     })
 
     test('Fable keeps its color until Fable alone passes 75', async ($, on) => {
@@ -1382,6 +1399,8 @@ describe('Fable helpers', () => {
     expect(fableTurn(0, 4, 2, 0.12)).toBe(0)
     expect(fableTurn(1, 4, -40, 0.12)).toBe(-40)
     expect(fableTurn(1, 4, undefined, 0.12)).toBeUndefined()
+    // No Fable in the turn: 0, even when the Week's change can't be told.
+    expect(fableTurn(0, 4, undefined, 0.12)).toBe(0)
   })
 
   test('bar cells: two parts in a cell, the sliver, the pace mark', () => {

@@ -74,6 +74,7 @@ const EMPTY: Weather = {
   fableSince: null,
   fableAllowance: null,
   serverAt: 0,
+  serverDue: false,
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
 
@@ -113,6 +114,7 @@ const NO_LIMITS = {
   fableSince: null,
   fableAllowance: null,
   serverAt: 0,
+  serverDue: false,
 } satisfies Partial<Weather>
 
 const AGENT_COLOR = '#5fb8b4'
@@ -259,7 +261,7 @@ async function askServer($: EngineInterface) {
   try {
     const now = await $.clock.now()
     if (now - ((await read($, weather)).serverAt ?? 0) < SERVER_EVERY_MS) return
-    await update($, weather, cur => ({ ...cur, serverAt: now }))
+    await update($, weather, cur => ({ ...cur, serverAt: now, serverDue: false }))
     const auth = await $.session.authorize()
     if (auth?.kind !== 'bearer') return
     const res = await $.http.fetch(USAGE_URL, { headers: { 'Content-Type': 'application/json' }, auth: auth.handle })
@@ -393,11 +395,13 @@ async function noteCompaction($: EngineInterface, agentId: string | undefined, i
 }
 
 // Each limit's change over the turn ending now, this session's share where a
-// rate is known; with no baseline and no rate, the last figures stay.
+// rate is known; with no baseline and no rate, the last figures stay. Not the
+// Fable limit's: it is read between turns, so it never moves within one.
 const lastDeltas = (w: Weather): Record<string, number> => {
   const spent = w.turnStartSpent === null ? null : w.spent - w.turnStartSpent
   const deltas = Object.fromEntries(
     w.limits.flatMap(l => {
+      if (isFableKind(l.kind)) return []
       const d = turnDelta(l.percentUsed, w.turnStartLimits?.[l.kind], spent, w.rates[l.kind])
       return d === undefined ? [] : [[l.kind, d]]
     }),
@@ -411,13 +415,15 @@ export const register: Register = on => {
 
     // Shows a window whose reset time has passed as fresh, live or saved,
     // until the next reading.
-    // Other sessions' Fable counts, and "since" going at the reset, follow.
+    // Other sessions' Fable counts, and "since" going at the reset, follow;
+    // then the account's answer, for a turn that ended too soon after the last.
     $.clock.every(60_000, () => {
       void $.clock
         .now()
         .then(async at => {
           await update($, weather, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at }))
           await countModels($, at)
+          if ((await read($, weather)).serverDue) await askServer($)
         })
         .catch(() => {})
     })
@@ -636,6 +642,8 @@ export const register: Register = on => {
           compacted: measured ? false : w.compacted,
           lastLimitDelta: lastDeltas(w),
           lastFableDelta: fableDelta ?? w.lastFableDelta,
+          // Its Fable use is not in the account's figure yet: asked below, or by the minute timer.
+          serverDue: true,
           // A whole turn ran on the new model: the switch note has been read.
           ...(w.switchSeen ? { switchedFrom: null, switchSeen: false } : {}),
         }
@@ -724,6 +732,7 @@ export const register: Register = on => {
         fableSince: w.fableSince,
         fableAllowance: w.fableAllowance,
         serverAt: w.serverAt,
+        serverDue: w.serverDue,
         // A /clear's new ledger starts at 0: its first reading counts in full.
         clearedAt: e.reason === 'clear' ? now : null,
       }))
