@@ -535,15 +535,6 @@ export const paceAt = (resetsAt: string | undefined, now: number, lengthMs: numb
   return Math.max(0, Math.min(1, 1 - left / lengthMs))
 }
 
-/** When the limit fills at this pace, rounded to `stepMs` (ISO); undefined if not before the reset or too early. */
-export const fullAt = (pct: number, resetsAt: string | undefined, now: number, lengthMs: number, stepMs: number): string | undefined => {
-  const elapsed = paceAt(resetsAt, now, lengthMs)
-  if (elapsed === undefined || elapsed < 0.1 || pct <= 0 || pct >= 100) return undefined
-  const at = now + ((100 - pct) / pct) * elapsed * lengthMs
-  if (at >= Date.parse(resetsAt!)) return undefined
-  return new Date(Math.round(at / stepMs) * stepMs).toISOString()
-}
-
 /** A piece of a band row; shown while the row's tidy level is in [`from`, `upTo`). */
 export type Piece = { text: string; color?: string; bg?: string; bold?: boolean; dim?: boolean; from?: number; upTo?: number }
 
