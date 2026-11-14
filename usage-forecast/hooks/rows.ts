@@ -12,7 +12,6 @@ import {
   fmtLimitDelta,
   fmtPct,
   fmtReset,
-  fullAt,
   HOT_PCT,
   isFableKind,
   LIMIT_KINDS,
@@ -38,7 +37,6 @@ export const FABLE_LABEL = '└ Fable'
 // A limit used this much draws amber (red from HOT_PCT).
 export const WARN_PCT = 75
 export const WARN = 'warning'
-const MIN_MS = 60_000
 
 /** This session's Fable $ since its count read `start`: all of it if the count started over since. */
 export const fableUsdSince = (w: Weather, start: number | null): number => {
@@ -137,8 +135,6 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
     const lastDelta = isFable ? realLast : w.lastLimitDelta[kind]
     const thisText = thisDelta === undefined ? '' : fmtLimitDelta(thisDelta, 'this')
     const lastText = lastDelta === undefined ? '' : fmtLimitDelta(lastDelta, 'last')
-    // When it fills at this pace, if that is before the reset.
-    const full = length === undefined ? undefined : fullAt(pct, limit.resetsAt, w.now, length, withDate ? 60 * MIN_MS : 10 * MIN_MS)
     // Counted from the last refresh; the minute timer keeps it current.
     const at = limit.resetsAt ? fmtReset(limit.resetsAt, withDate) : ''
     const left = at ? fmtLeft(Date.parse(limit.resetsAt!) - w.now) : ''
@@ -152,12 +148,6 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
       ...(thisText ? { now: { text: ` ${thisText}`, color: base } } : {}),
       ...(lastText ? { last: { text: ` ${lastText}`, color: base, upTo: LAST_UPTO } } : {}),
       tail: [
-        ...(full
-          ? [
-              { text: ' · ', dim: true, upTo: 4 },
-              { text: `full ${fmtReset(full, withDate)}`, color: pct >= HOT_PCT ? 'red' : WARN, upTo: 4 },
-            ]
-          : []),
         ...(at
           ? [
               { text: ` · ${left} → ${at}`, dim: true, upTo: 1 },

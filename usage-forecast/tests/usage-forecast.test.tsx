@@ -9,7 +9,6 @@ import {
   fableShare,
   fableTurn,
   familyOf,
-  fullAt,
   paceAt,
   runs,
   serverLimits,
@@ -1434,19 +1433,6 @@ describe('edge cases', () => {
       expect((await ui.find({ type: 'Text', text: /^ 84%$/ }))?.props.color).toBe('warning')
     })
 
-    test('"full at" shows only where the pace would fill the limit before its reset', async ($, on) => {
-      setup(on, RATES, [limit('five_hour', 80, FIVE), week(20)])
-      await start($)
-      const ui = await mount($)
-      const [session, weekRow] = await rowsOf(ui)
-      // 80% halfway through: full in 37.5 minutes, at 10:40 UTC.
-      const at = new Date('2026-10-10T10:40:00Z')
-      const h = at.getHours()
-      expect(session).toContain(` · full ${h % 12 || 12}:40${h < 12 ? 'am' : 'pm'} · 2h 30m → `)
-      expect((await ui.find({ type: 'Text', text: /^full / }))?.props.color).toBe('warning')
-      expect(weekRow).not.toContain('full')
-    })
-
     test('a narrow band drops whole pieces instead of cutting a row', async ($, on) => {
       const { s } = setup(on)
       await start($)
@@ -1457,22 +1443,22 @@ describe('edge cases', () => {
       await $.turn.start({ text: 'more', turnId: 't2' })
       reading(s, 30, [limit('five_hour', 82, FIVE), week(46)])
       await stepOn($, 't2', FABLE_ID)
-      for (const cols of [140, 80, 56]) {
+      for (const cols of [140, 64, 44]) {
         const rows = await rowsOf(await mount($, true, { bodyColumns: cols }))
         expect(rows).toHaveLength(3)
         for (const row of rows) expect(row.length).toBeLessThanOrEqual(cols)
         for (const row of rows) expect(row).toMatch(/ \d+(\.\d)?% +\+[\d.]+% now/)
       }
-      // 80 columns: Week's reset shortens to the time left.
-      const [session, weekRow, fable] = await rowsOf(await mount($, true, { bodyColumns: 80 }))
-      expect(session).toMatch(/ 82% +\+2% now ▲ +\+50% last · full \S+ · 2h 30m → \S+$/)
-      expect(weekRow).toMatch(/ 46% +\+0\.6% now ▲ +\+3% last · full Oct \d+ at \S+ · 5d$/)
+      // 64 columns: Week's reset shortens to the time left.
+      const [session, weekRow, fable] = await rowsOf(await mount($, true, { bodyColumns: 64 }))
+      expect(session).toMatch(/ 82% +\+2% now ▲ +\+50% last · 2h 30m/)
+      expect(weekRow).toMatch(/ 46% +\+0\.6% now ▲ +\+3% last · 5d$/)
       expect(fable).toMatch(/ 3\.6% +\+0\.6% now ▲ +\+3% last · since Sat$/)
-      // 56: no reset, no last; "full" and "since" still fit.
-      const narrow = await rowsOf(await mount($, true, { bodyColumns: 56 }))
-      expect(narrow[0]).toMatch(/ 82% +\+2% now +· full \S+$/)
-      expect(narrow[1]).toMatch(/ 46% +\+0\.6% now +· full Oct \d+ at \S+$/)
-      expect(narrow[2]).toMatch(/ 3\.6% +\+0\.6% now +· since Sat$/)
+      // 44: "last" leaves every row together; the time left still fits, "since" does not.
+      const narrow = await rowsOf(await mount($, true, { bodyColumns: 44 }))
+      expect(narrow[0]).toMatch(/ 82% +\+2% now · 2h 30m$/)
+      expect(narrow[1]).toMatch(/ 46% +\+0\.6% now · 5d$/)
+      expect(narrow[2]).toMatch(/ 3\.6% +\+0\.6% now$/)
     })
   })
 })
@@ -1580,19 +1566,12 @@ describe('Fable helpers', () => {
     expect([toAllowance(3, 50), toAllowance(0.1, 50), toAllowance(80, 50), toAllowance(-40, 50)]).toEqual([6, 0.2, 100, -40])
   })
 
-  test('pace and "full at"', () => {
+  test('pace: how far through its window a limit is', () => {
     const now = Date.parse('2026-10-10T10:00:00Z')
     const FIVE_H = 5 * 3_600_000
     expect(paceAt('2026-10-10T12:30:00Z', now, FIVE_H)).toBe(0.5)
     expect(paceAt('2026-10-11T12:30:00Z', now, FIVE_H)).toBe(0)
     expect(paceAt(undefined, now, FIVE_H)).toBeUndefined()
-    // 80% halfway: 37.5 minutes on, to the 10 minutes.
-    expect(fullAt(80, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBe('2026-10-10T10:40:00.000Z')
-    // Behind pace, too early to tell, full or empty: none.
-    expect(fullAt(30, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBeUndefined()
-    expect(fullAt(80, '2026-10-10T14:45:00Z', now, FIVE_H, 600_000)).toBeUndefined()
-    expect(fullAt(100, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBeUndefined()
-    expect(fullAt(0, '2026-10-10T12:30:00Z', now, FIVE_H, 600_000)).toBeUndefined()
   })
 
   test('the figures line up in columns; "last" leaves every row together; only a passed reset says so', () => {

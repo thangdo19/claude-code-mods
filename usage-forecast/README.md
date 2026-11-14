@@ -47,11 +47,10 @@ While you view an agent's transcript (← for agents), the line becomes one row 
 | `95%` | How much of that limit you've used. `over by 4%` past 100%. |
 | `▲ +0.2% last` | What your last turn used, agents included. It keeps growing while that turn's background agents still work. |
 | `+1.2% now` | What the running turn has used so far, agents included (only while Claude works). |
-| `full Nov 17 at 6am` | At this pace the limit runs out then, before it resets. Shown only when that happens. |
 | `37m → 6:30pm` | Time left until the limit resets, then the clock time. |
 | `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it; a turn that used no Fable shows neither. |
 
-The figures line up in columns from row to row. In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `last` on every row together, then `full`) so the label, bar and figure always fit.
+The figures line up in columns from row to row. In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `last` on every row together) so the label, bar and figure always fit.
 
 ## Install
 
