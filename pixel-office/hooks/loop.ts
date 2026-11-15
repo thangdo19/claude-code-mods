@@ -33,6 +33,8 @@ class Runtime {
   latest: Office = EMPTY
   /** The session's folder, for short paths in the list. */
   cwd: string | undefined
+  /** The terminal's width as the last above-prompt drawing measured it; undefined before one. */
+  termCols: number | undefined
   /** What the pane last drew: the timer repaints the same Raster. */
   mounted: { shape: Shape; inline: boolean; viewing?: string } | null = null
   readonly sim = new BigSim()

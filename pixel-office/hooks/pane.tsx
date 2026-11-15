@@ -25,6 +25,15 @@ const LIST_BESIDE = 36
 /** The camera's smallest window: narrower or shorter, the list goes under it, or shows alone. */
 const CAM_MIN_COLS = 32
 const CAM_MIN_ROWS = 8
+/**
+ * The engine docks a pane someone asked for (as `/diff`) from 110 columns, but one a mod opens on its own waits
+ * below 144. So the first prompt typed opens the office again (that open counts as asked) from this width.
+ */
+export const DOCK_COLS = 110
+
+/** The office opened at the start but still waits undrawn (too narrow for an unasked pane), and now fits the dock. */
+export const shouldReopen = (closedByHand: boolean, panes: readonly { id: string; isPlaced: boolean }[], cols: number | undefined) =>
+  !closedByHand && cols !== undefined && cols >= DOCK_COLS && panes.some(p => p.id === PANE && !p.isPlaced)
 
 /**
  * What the pane shows: the office as designed (64 × 31) wherever it fits, with the
@@ -79,6 +88,26 @@ export function pane(on: On): void {
     const opened = await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLS, rows: INLINE_ROWS })
     return { text: opened.isPlaced ? 'Office opened.' : 'Office opens when there is room (' + opened.reason + ').' }
   })
+
+  // The terminal's width, for the reopen below. Draws nothing above the prompt.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface === 'terminal' && e.viewport) rt.termCols = e.viewport.columns
+    return next(e)
+  })
+
+  // Your own prompt: an office still waiting undrawn opens now, as asked, docked from 110 columns as /diff is.
+  // The engine remembers it was asked for, so later sessions place it from 110 at the start too.
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      if (e.origin.kind === 'composer' && e.isMeta !== true && e.command === undefined) {
+        const closed = (await $.store.get(CLOSED_KEY)) === true
+        if (shouldReopen(closed, await $.ui.panes(), rt.termCols)) void $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLS, rows: INLINE_ROWS }).catch(() => {})
+      }
+    } catch {
+      // It opens from 144 columns, or with /office.
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE) {

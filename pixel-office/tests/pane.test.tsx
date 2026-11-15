@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { CAM_COLS, CAM_ROWS } from '../hooks/camera'
+import { DOCK_COLS, shouldReopen } from '../hooks/pane'
 
 // The test environment has timers; its type declarations name none.
 const wait = (ms: number) => new Promise<void>(r => (globalThis as unknown as { setTimeout(fn: () => void, ms: number): unknown }).setTimeout(r, ms))
@@ -70,4 +71,14 @@ test('a created and finished task shows on the board through the hooks', async (
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^1\/1/ }))?.text).toBe('1/1')
   await ui.unmount()
+})
+
+test('an office still waiting undrawn reopens at a typed prompt from 110 columns, as /diff docks', () => {
+  const waiting = [{ id: 'office', isPlaced: false }]
+  expect(shouldReopen(false, waiting, DOCK_COLS)).toBe(true)
+  expect(shouldReopen(false, waiting, DOCK_COLS - 1)).toBe(false)
+  // Closed by hand, already drawn, or the width not measured yet: left alone.
+  expect(shouldReopen(true, waiting, 130)).toBe(false)
+  expect(shouldReopen(false, [{ id: 'office', isPlaced: true }], 130)).toBe(false)
+  expect(shouldReopen(false, waiting, undefined)).toBe(false)
 })
