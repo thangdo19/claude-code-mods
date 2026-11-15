@@ -47,10 +47,11 @@ While you view an agent's transcript (← for agents), the line becomes one row 
 | `95%` | How much of that limit you've used. `over by 4%` past 100%. |
 | `▲ +0.2% last` | What your last turn used, agents included. It keeps growing while that turn's background agents still work. |
 | `+1.2% now` | What the running turn has used so far, agents included (only while Claude works). |
+| `Σ +6.2%` | Faint: what this whole session has used of that limit, agents included. It starts over after `/clear` or `/resume`, and when that limit resets. |
 | `37m → 6:30pm` | Time left until the limit resets, then the clock time. |
-| `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it; a turn that used no Fable shows neither. |
+| `└ Fable` | Your Fable limit, the same figure as `/usage` and claude.ai: how much of Fable's own weekly allowance you've used, with its own pace mark and reset. `+6% now` / `▲ +6% last` is what a turn used of it, `Σ` the session's total; a turn that used no Fable shows neither. |
 
-The figures line up in columns from row to row. In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `last` on every row together) so the label, bar and figure always fit.
+The figures line up in columns from row to row. In a narrow terminal, whole pieces drop out (the reset time shortens, then goes, then `Σ`, then `last`, each on every row together) so the label, bar and figure always fit.
 
 ## Install
 
@@ -95,5 +96,5 @@ npx -p typescript tsc -p .   # type check
   - `window reset`: the limit's reset time has passed, until a new reading arrives.
   - `↻ switched from Opus 5.5`: the model changed (`/model`, or an automatic fallback). Stays until one whole turn has run on the new model. Helper agents' models never count.
 - **New session:** the bars show the last readings saved by an earlier session until Claude replies.
-- **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go.
+- **`/clear` and `/resume`:** agents still running stay listed until they finish; finished ones go. The `Σ` totals start over.
 - **`/logout`**, or switching to an API key, hides the bars and deletes the saved readings and Fable counts.

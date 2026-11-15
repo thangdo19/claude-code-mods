@@ -1,7 +1,7 @@
 // The limit rows of the band (Session, Week, Fable, Spend) as pieces of
 // text. Pure: register.tsx draws them, tests and scripts read them directly.
 
-import type { Limit, Weather } from '../types'
+import type { Limit, TotalFrom, Weather } from '../types'
 import {
   barCells,
   FABLE,
@@ -10,6 +10,7 @@ import {
   fmtDay,
   fmtLeft,
   fmtLimitDelta,
+  fmtLimitTotal,
   fmtPct,
   fmtReset,
   HOT_PCT,
@@ -19,6 +20,7 @@ import {
   paceAt,
   parentOf,
   runs,
+  sameWindow,
   sumLedgers,
   tidy,
   toAllowance,
@@ -55,11 +57,57 @@ export const thisDeltaOf = (w: Weather, working: boolean, limit: Limit): number 
   return turnDelta(limit.percentUsed, w.turnStartLimits?.[limit.kind], spent, w.rates[limit.kind])
 }
 
+// A reading this fresh (or a live one) is a fair start for a total's %.
+const FAIR_MS = 60_000
+
+/**
+ * Where each limit's session total counts from, kept up with the readings: a limit seen for the first time counts
+ * from now; one whose window reset counts again from the reset (its % from then unknown); a lower reading in the same
+ * window is the start. The same object when nothing changed. The Fable limit has none: it counts from its parent's.
+ */
+export const rebaseTotals = (w: Weather): Weather => {
+  const from = w.totalFrom ?? {}
+  const fair = w.limitsAsOf === null || w.now - w.limitsAt < FAIR_MS
+  const fable = w.modelSpent?.usd[FABLE] ?? 0
+  let changed: Record<string, TotalFrom> | undefined
+  for (const l of w.limits) {
+    if (isFableKind(l.kind)) continue
+    const f = from[l.kind]
+    const window = l.resetsAt === undefined ? {} : { resetsAt: l.resetsAt }
+    let next: TotalFrom | undefined
+    if (!f || (!l.isReset && !f.isReset && !sameWindow(f.resetsAt, l.resetsAt))) next = { spent: w.spent, fable, ...(fair && !f ? { pct: l.percentUsed } : {}), ...window }
+    else if (l.isReset) next = f.isReset ? undefined : { spent: w.spent, fable, isReset: true }
+    // The new window's first reading: what was spent since the reset counts.
+    else if (f.isReset) next = { spent: f.spent, fable: f.fable, ...window }
+    // Nothing spent yet: a fair reading is the start.
+    else if (f.pct === undefined && fair && w.spent === f.spent) next = { ...f, pct: l.percentUsed }
+    else if (f.pct !== undefined && l.percentUsed < f.pct) next = { ...f, pct: l.percentUsed }
+    if (next) (changed ??= { ...from })[l.kind] = next
+  }
+  return changed ? { ...w, totalFrom: changed } : w
+}
+
+/** What this session used of a limit since its total's start: its share once a rate is learned, the account's change before. */
+export const totalOf = (w: Weather, limit: Limit): number | undefined => {
+  const f = w.totalFrom?.[limit.kind]
+  if (!f || f.isReset || limit.isReset) return undefined
+  const d = turnDelta(limit.percentUsed, f.pct, w.spent - f.spent, w.rates[limit.kind])
+  return d === undefined || d < 0 ? undefined : d
+}
+
+/** Fable's part of the parent's session total, in the parent's points. */
+const fableTotalOf = (w: Weather, parent: Limit): number | undefined => {
+  const f = w.totalFrom?.[parent.kind]
+  if (!f || f.isReset || parent.isReset) return undefined
+  const d = fableTurn(fableUsdSince(w, f.fable), w.spent - f.spent, totalOf(w, parent), w.rates[parent.kind])
+  return d === undefined || d <= 0 ? undefined : d
+}
+
 /** The bar's width: 10 cells up to 99 columns, 30 from 119. */
 export const barWidth = (cols: number) => Math.max(10, Math.min(30, cols - LABEL_WIDTH - 80))
 
 // A row before its columns are lined up with the other rows': the %, the running turn's figure, the last turn's.
-type Row = { head: Piece[]; pct: Piece; over: Piece[]; now?: Piece; last?: Piece; tail: Piece[] }
+type Row = { head: Piece[]; pct: Piece; over: Piece[]; now?: Piece; last?: Piece; total?: Piece; tail: Piece[] }
 // `last` goes at this tidy level, after the reset time.
 const LAST_UPTO = 3
 
@@ -67,14 +115,17 @@ const blank = (n: number, upTo?: number): Piece[] =>
   n <= 0 ? [] : [upTo === undefined ? { text: ' '.repeat(n) } : { text: ' '.repeat(n), upTo }]
 
 /** Rows as pieces, each figure under the one above: padded to the widest, a gap where a row has none. */
-const lineUp = (rows: readonly Row[], withLast: boolean): { pieces: Piece[]; last?: Piece }[] => {
+const lineUp = (rows: readonly Row[], withLast: boolean, withTotal: boolean): { pieces: Piece[]; last?: Piece; total?: Piece }[] => {
   const widest = (of: (r: Row) => Piece | undefined) => Math.max(0, ...rows.map(r => of(r)?.text.length ?? 0))
   const pctW = widest(r => r.pct)
   const nowW = widest(r => r.now)
   const lastW = withLast ? widest(r => r.last) : 0
+  const totalW = withTotal ? widest(r => r.total) : 0
+  // " ▲ +0.4% last", " Σ +6.2%": the mark stays put, the figure moves right.
+  const markFirst = (p: Piece, w: number) => ({ ...p, text: p.text.slice(0, 3) + p.text.slice(3).padStart(w - 3) })
   return rows.map(r => {
-    // " ▲ +0.4% last": the mark stays put, the figure moves right.
-    const last = lastW > 0 && r.last ? { ...r.last, text: r.last.text.slice(0, 3) + r.last.text.slice(3).padStart(lastW - 3) } : undefined
+    const last = lastW > 0 && r.last ? markFirst(r.last, lastW) : undefined
+    const total = totalW > 0 && r.total ? markFirst(r.total, totalW) : undefined
     const pieces = [
       ...r.head,
       ...blank(pctW - r.pct.text.length),
@@ -83,18 +134,25 @@ const lineUp = (rows: readonly Row[], withLast: boolean): { pieces: Piece[]; las
       ...blank(nowW - (r.now?.text.length ?? 0)),
       ...(r.now ? [r.now] : []),
       ...(last ? [last] : blank(lastW, LAST_UPTO)),
+      ...(total ? [total] : blank(totalW, LAST_UPTO)),
       ...r.tail,
     ]
-    return last ? { pieces, last } : { pieces }
+    return { pieces, ...(last ? { last } : {}), ...(total ? { total } : {}) }
   })
 }
 
-/** Each row made to fit `cols`. `last` leaves every row together, so the columns stay lined up. */
+/**
+ * Each row made to fit `cols`. The total, then `last`, leaves every row together (after the reset time), so the
+ * columns stay lined up.
+ */
 const fit = (rows: readonly Row[], cols: number): Piece[][] => {
-  const lined = lineUp(rows, true)
-  const tidied = lined.map(l => tidy(l.pieces, cols))
-  const isCut = lined.some((l, i) => l.last !== undefined && !tidied[i]!.includes(l.last))
-  return isCut ? lineUp(rows, false).map(l => tidy(l.pieces, cols)) : tidied
+  for (const [withLast, withTotal] of [[true, true], [true, false]] as const) {
+    const lined = lineUp(rows, withLast, withTotal)
+    const tidied = lined.map(l => tidy(l.pieces, cols))
+    const isCut = lined.some((l, i) => (l.last !== undefined && !tidied[i]!.includes(l.last)) || (l.total !== undefined && !tidied[i]!.includes(l.total)))
+    if (!isCut) return tidied
+  }
+  return lineUp(rows, false, false).map(l => tidy(l.pieces, cols))
 }
 
 // Getting close: amber, then red, as the context line does.
@@ -117,6 +175,14 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
   const allowance = w.fableAllowance ?? undefined
   const realThis = allowance && fableThis !== undefined ? toAllowance(fableThis, allowance) : undefined
   const realLast = allowance && w.lastFableDelta ? toAllowance(w.lastFableDelta, allowance) : undefined
+  // Fable's session total, the same way: the count's, in Fable's own % for a real limit.
+  const fableTotal = parent ? fableTotalOf(w, parent) : undefined
+  const realTotal = allowance && fableTotal !== undefined ? toAllowance(fableTotal, allowance) : undefined
+  // The session's total, faint after `last`.
+  const totalPiece = (total: number | undefined, isSpent: boolean, color: string): { total?: Piece } => {
+    const text = total === undefined ? '' : fmtLimitTotal(total, isSpent)
+    return text ? { total: { text: ` ${text}`, color, dim: true, upTo: LAST_UPTO } } : {}
+  }
 
   // One limit's row. Pieces with `upTo` go first when the row is too wide.
   const limitPieces = (limit: Limit, label: string, base: string, track: string): Row => {
@@ -147,6 +213,7 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
       over: pct > 100 ? [{ text: ` over by ${fmtPct(pct - 100)}%`, color: 'red', bold: true }] : [],
       ...(thisText ? { now: { text: ` ${thisText}`, color: base } } : {}),
       ...(lastText ? { last: { text: ` ${lastText}`, color: base, upTo: LAST_UPTO } } : {}),
+      ...(isFable ? totalPiece(realTotal, false, base) : totalPiece(totalOf(w, limit), w.spent > (w.totalFrom?.[kind]?.spent ?? w.spent), base)),
       tail: [
         ...(at
           ? [
@@ -185,6 +252,7 @@ export const limitRows = (w: Weather, cols: number, working: boolean): Piece[][]
       over: [],
       ...(thisText ? { now: { text: ` ${thisText}`, color: MODEL_COLOR } } : {}),
       ...(lastText ? { last: { text: ` ${lastText}`, color: MODEL_COLOR, upTo: LAST_UPTO } } : {}),
+      ...totalPiece(fableTotal, false, MODEL_COLOR),
       tail: w.fableSince != null ? [{ text: ` · since ${fmtDay(w.fableSince)}`, dim: true, upTo: 2 }] : [],
     }
   }

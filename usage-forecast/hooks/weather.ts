@@ -134,6 +134,10 @@ export const fmtLimitDelta = (delta: number, span: 'this' | 'last'): string => {
   return span === 'last' ? '▲ <1% last' : ''
 }
 
+/** The session's total of a limit: "Σ +6.2%"; "Σ <1%" when something was spent but the limit moved under a point. */
+export const fmtLimitTotal = (total: number, isSpent: boolean): string =>
+  total > 0 ? `Σ +${fmtPct(total)}%` : total === 0 && isSpent ? 'Σ <1%' : ''
+
 type Ledger = { usd: number | null; spent: number; costFrom: number | null }
 
 const CLEAR_SLACK_MS = 60_000

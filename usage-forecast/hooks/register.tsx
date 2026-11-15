@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
 import type { Agent, Limit, TurnStart, Weather } from '../types'
-import { fableUsdSince, limitRows, MODEL_COLOR, thisDeltaOf } from './rows'
+import { fableUsdSince, limitRows, MODEL_COLOR, rebaseTotals, thisDeltaOf } from './rows'
 import {
   addSpend,
   AGENT_ICONS,
@@ -81,8 +81,12 @@ const EMPTY: Weather = {
   fableAllowance: null,
   serverAt: 0,
   serverDue: false,
+  totalFrom: {},
 }
 const weather = atom({ plugin: 'usage-forecast', key: 'weather' } as const, EMPTY)
+
+/** Every change goes through here: the session totals' starts keep up with the readings (`rebaseTotals`). */
+const save = ($: EngineInterface, change: (w: Weather) => Weather) => update($, weather, cur => rebaseTotals(change(cur)))
 
 // The newest reading any session took (`at`: when it was read), shared so a new session shows it at
 // once and an idle one follows the others. Never the account's Fable limit: that has its own key.
@@ -129,6 +133,7 @@ const NO_LIMITS = {
   fableAllowance: null,
   serverAt: 0,
   serverDue: false,
+  totalFrom: {},
 } satisfies Partial<Weather>
 
 const AGENT_COLOR = '#5fb8b4'
@@ -350,7 +355,7 @@ async function countModels($: EngineInterface, now: number) {
     const modelTotals: ModelLedger = parent?.resetsAt === undefined ? { usd: {} } : { usd: others, resetsAt: parent.resetsAt }
     // Nothing new: no write, so nothing is drawn again.
     if (fableSince === w.fableSince && JSON.stringify(modelTotals) === JSON.stringify(w.modelTotals)) return
-    await update($, weather, cur => ({ ...cur, modelTotals, fableSince }))
+    await save($, cur => ({ ...cur, modelTotals, fableSince }))
   } catch {
     // The row shows what it had; the next save counts again.
   }
@@ -385,11 +390,11 @@ async function askServer($: EngineInterface) {
     const isFresh = shared !== undefined && now - shared.at < SERVER_EVERY_MS
     if (isFresh ? shared.at <= w.serverAt : now - (w.serverAt ?? 0) < SERVER_EVERY_MS) return
     // Its own ask answers for what ended before it; another session's answer may not.
-    if (!isFresh) await update($, weather, cur => ({ ...cur, serverAt: now, serverDue: false }))
+    if (!isFresh) await save($, cur => ({ ...cur, serverAt: now, serverDue: false }))
     const auth = await $.session.authorize()
     if (auth?.kind !== 'bearer') return
     if (isFresh) {
-      await update($, weather, cur => withAnswer(cur, shared, now))
+      await save($, cur => withAnswer(cur, shared, now))
       return
     }
     const res = await $.http.fetch(USAGE_URL, { headers: { 'Content-Type': 'application/json' }, auth: auth.handle })
@@ -398,7 +403,7 @@ async function askServer($: EngineInterface) {
     if (!answer) return
     const entry: Server = { at: now, ...answer }
     await $.store.set(SERVER_KEY, entry)
-    await update($, weather, cur => withAnswer(cur, entry, now))
+    await save($, cur => withAnswer(cur, entry, now))
   } catch {
     // What is held stands until the next answer.
   }
@@ -416,7 +421,7 @@ async function syncShared($: EngineInterface, now: number) {
     const saved = (await $.store.get(STORE_KEY)) as Saved | undefined
     const answer = (await $.store.get(SERVER_KEY)) as Server | undefined
     if (!(saved && saved.at > w.limitsAt) && !(answer && answer.at > w.serverAt)) return
-    await update($, weather, cur => {
+    await save($, cur => {
       const next = saved && saved.at > cur.limitsAt ? withReading(cur, saved, now) : cur
       return answer && answer.at > next.serverAt ? withAnswer(next, answer, now) : next
     })
@@ -478,7 +483,7 @@ async function ensureLoop($: EngineInterface, id: string) {
   if (w.agents[id] || w.forks.includes(id)) return
   const info = (await $.agent.list().catch(() => [])).find(a => a.id === id)
   const now = await $.clock.now()
-  await update($, weather, cur => {
+  await save($, cur => {
     if (cur.agents[id] || cur.forks.includes(id)) return cur
     if (!info) return { ...cur, forks: [...cur.forks, id].slice(-MAX_FORKS) }
     const isTeammate = info.teammateId !== undefined
@@ -512,7 +517,7 @@ async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, lo
     const now = await $.clock.now()
     let before = 0
     let hadCount = false
-    const w = await update($, weather, cur => {
+    const w = await save($, cur => {
       before = cur.spent
       hadCount = hasCount(cur.modelSpent)
       const taken = withUsage(cur, usage, now, modelId, fresh)
@@ -526,7 +531,7 @@ async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, lo
     if (showsCount(w) && (persist || (!hadCount && hasCount(w.modelSpent)))) await countModels($, now)
     if (persist) {
       const rates = await learn($, (await saveLimits($, w)) ? sharable(w.limits) : [], now)
-      await update($, weather, cur => ({ ...cur, rates }))
+      await save($, cur => ({ ...cur, rates }))
     }
   } catch {
     // A failed refresh only skips one reading; never disturb the event.
@@ -537,11 +542,11 @@ async function applyUsage($: EngineInterface, usage: Usage, persist: boolean, lo
 async function noteCompaction($: EngineInterface, agentId: string | undefined, isMain: boolean, before: Weather | undefined) {
   if (agentId !== undefined) {
     // An agent compacted its own transcript: yours is untouched.
-    await update($, weather, w => withAgent(w, agentId, { compacted: true }))
+    await save($, w => withAgent(w, agentId, { compacted: true }))
   } else if (isMain) {
     const usage = await $.session.usage().catch(() => undefined)
     const now = await $.clock.now()
-    await update($, weather, cur => {
+    await save($, cur => {
       const w = usage ? withUsage(cur, usage, now) : cur
       // Its requests run as an unnamed fork, counted as yours: what yours grew by.
       const cost = before ? Math.max(0, w.spent - w.agentSpent - (before.spent - before.agentSpent)) : 0
@@ -563,7 +568,7 @@ export const register: Register = on => {
       void $.clock
         .now()
         .then(async at => {
-          await update($, weather, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at }))
+          await save($, cur => ({ ...cur, limits: reviveLimits(cur.limits, at), now: at }))
           await syncShared($, at)
           const w = await read($, weather)
           if (showsCount(w)) await countModels($, at)
@@ -575,9 +580,9 @@ export const register: Register = on => {
 
     try {
       // A hot reload over state saved by an older version: its new fields start empty.
-      await update($, weather, cur => ({ ...EMPTY, ...cur }))
+      await save($, cur => ({ ...EMPTY, ...cur }))
       const now = await $.clock.now()
-      const w = await update($, weather, withInstance)
+      const w = await save($, withInstance)
       // A hot reload fires session.start again: keep what this session measured.
       if (w.window === 0) {
         // Counted as /context counts it; the local estimate if that fails.
@@ -589,7 +594,7 @@ export const register: Register = on => {
         const saved = (await $.store.get(STORE_KEY)) as Saved | undefined
         const live = copyLimits(usage.rateLimits)
         const rates = await learn($, [], now).catch(() => ({}))
-        await update($, weather, cur => ({
+        await save($, cur => ({
           ...cur,
           ...(usage.cost ? addSpend(cur, usage.cost.usd, usage.startedAt) : {}),
           rates,
@@ -618,7 +623,7 @@ export const register: Register = on => {
     try {
       if ((await read($, weather)).model === null) {
         const model = await $.session.model()
-        await update($, weather, cur => (cur.model === null ? withModel(cur, model) : cur))
+        await save($, cur => (cur.model === null ? withModel(cur, model) : cur))
       }
     } catch {
       // No name yet: the first request names it.
@@ -633,7 +638,7 @@ export const register: Register = on => {
       try {
         const id = e.agentId
         await ensureLoop($, id)
-        await update($, weather, cur => withAgent(cur, id, { status: 'running', endedAt: null }))
+        await save($, cur => withAgent(cur, id, { status: 'running', endedAt: null }))
       } catch {
         // Listed at its first reply instead.
       }
@@ -645,7 +650,7 @@ export const register: Register = on => {
       const rates = await learn($, [], now).catch(() => undefined)
       // The other sessions' newer reading first: the turn counts from where the account stands now.
       await syncShared($, now)
-      await update($, weather, cur => {
+      await save($, cur => {
         const w = withInstance(usage ? withUsage(cur, usage, now) : cur)
         // Limits only saved by an earlier session are not a fair baseline, unless read just now.
         const isFair = w.limitsAsOf === null || now - w.limitsAt < FRESH_MS
@@ -677,7 +682,7 @@ export const register: Register = on => {
       const id = result.agentId
       if (id !== undefined) {
         const now = await $.clock.now()
-        await update($, weather, cur => {
+        await save($, cur => {
           const prev = cur.agents[id]
           const isTeammate = e.isTeammate === true
           const agent: Agent = {
@@ -715,7 +720,7 @@ export const register: Register = on => {
         const named = withModel(cur, e.model)
         // Most requests name the same model and effort: no write, nothing drawn again.
         const isSame = named.model === cur.model && named.switchedFrom === cur.switchedFrom && named.switchSeen === cur.switchSeen
-        if (!isSame || cur.effort !== effort) await update($, weather, w => ({ ...withModel(w, e.model), effort }))
+        if (!isSame || cur.effort !== effort) await save($, w => ({ ...withModel(w, e.model), effort }))
       } catch {
         // The name stays as it was until the next request.
       }
@@ -727,7 +732,7 @@ export const register: Register = on => {
       if (e.agentId !== undefined) {
         const id = e.agentId
         await ensureLoop($, id)
-        await update($, weather, cur => withAgent(cur, id, { model, effort }))
+        await save($, cur => withAgent(cur, id, { model, effort }))
       }
       // This response's cost goes to the loop that asked for it, and to its model
       // (an engine fork's too: a compaction's replies are booked to the model that wrote them).
@@ -749,7 +754,7 @@ export const register: Register = on => {
         const model = e.usage?.model ?? (await read($, weather)).agents[id]?.model
         if (usage) await applyUsage($, usage, false, id, model)
         const now = await $.clock.now()
-        await update($, weather, cur => {
+        await save($, cur => {
           const agent = cur.agents[id]
           if (!agent) return cur
           const ended = withAgent(cur, id, { status: endStatus(e.reason, agent.teammate), endedAt: now, model: e.usage?.model ?? agent.model })
@@ -774,7 +779,7 @@ export const register: Register = on => {
       // Rates are learned only from the newest reading there is: a turn that got no reply has none.
       const isNewest = await saveLimits($, spending).catch(() => false)
       const rates = await learn($, isNewest ? sharable(spending.limits) : [], now).catch(() => undefined)
-      await update($, weather, cur => {
+      await save($, cur => {
         const w = { ...(usage ? withUsage(cur, usage, now) : cur), rates: rates ?? cur.rates }
         const ended = {
           ...w,
@@ -820,7 +825,7 @@ export const register: Register = on => {
 
   // /model, the picker, a fallback: the band shows the new model at once.
   on('classic.PostModelSwitch', async ($, e, next) => {
-    if (e.agent_id === undefined) await update($, weather, w => withModel(w, e.to_model))
+    if (e.agent_id === undefined) await save($, w => withModel(w, e.to_model))
     return next(e)
     // Only observes: a failure here must never block the switch.
   }).catch(($, e, next) => next(e))
@@ -830,7 +835,7 @@ export const register: Register = on => {
     if (e.changed.includes('rateLimits') && e.rateLimits.length === 0) {
       // The limits left (an API key now, say): stop showing the last ones.
       try {
-        await update($, weather, w => ({ ...w, ...NO_LIMITS }))
+        await save($, w => ({ ...w, ...NO_LIMITS }))
         await $.store.delete(STORE_KEY)
         await $.store.delete(SERVER_KEY)
         await dropModels($)
@@ -868,7 +873,7 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       const now = await $.clock.now()
-      await update($, weather, w => ({
+      await save($, w => ({
         ...EMPTY,
         window: w.window,
         limits: w.limits,
@@ -901,9 +906,11 @@ export const register: Register = on => {
         serverDue: w.serverDue,
         // A /clear's new ledger starts at 0: its first reading counts in full.
         clearedAt: e.reason === 'clear' ? now : null,
+        // A new conversation: each limit's total starts over from here (`save` sets the starts).
+        totalFrom: {},
       }))
     } else if (e.reason === 'logout') {
-      await update($, weather, w => ({ ...w, ...NO_LIMITS }))
+      await save($, w => ({ ...w, ...NO_LIMITS }))
       await $.store.delete(STORE_KEY)
       await $.store.delete(SERVER_KEY)
       await dropModels($)

@@ -117,7 +117,15 @@ export type Weather = {
   serverAt: number
   /** A turn or an agent's run ended since this session asked: the minute timer asks again. */
   serverDue: boolean
+  /** Where each limit's session total counts from (not Fable's: it counts from its parent's). Empty again after /clear or /resume. */
+  totalFrom: Record<string, TotalFrom>
 }
+
+/**
+ * Where a limit's session total counts from: this session's spend and Fable $ then, the limit's % then (unknown when
+ * the reading was not fresh, or the window had just reset), its window; `isReset` while its reset passed unread.
+ */
+export type TotalFrom = { spent: number; fable: number; pct?: number; resetsAt?: string; isReset?: true }
 
 /** Where a turn began: this session's spend, each limit's %, its Fable $. */
 export type TurnStart = { spent: number | null; limits: Record<string, number> | null; fable: number | null }
